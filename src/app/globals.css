@@ -1,0 +1,219 @@
+@import "tailwindcss";
+
+/* Dark mode is class-based (html.dark), set before paint by the theme script in app/layout.tsx. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ── Design tokens ──────────────────────────────────────────────────────────
+   Semantic names only; components never reference raw palette values.
+   Light is the default; .dark overrides every token. */
+:root {
+  --canvas: #f6f6f8;
+  --surface: #ffffff;
+  --surface-2: #fafafb;
+  --sidebar: #fbfbfc;
+  --hover: #f2f2f5;
+  --line: #e5e5ea;
+  --line-soft: #efeff3;
+  --ink: #17171c;
+  --muted: #6b6b76;
+  --faint: #a0a0ab;
+
+  --primary: #5145e5;
+  --primary-hover: #4338ca;
+  --primary-soft: #eef0ff;
+  --primary-ink: #4338ca;
+  --brand-from: #6366f1;
+  --brand-to: #a855f7;
+
+  --success: #16a34a;
+  --success-soft: #ecfdf3;
+  --success-ink: #15803d;
+  --danger: #e11d48;
+  --danger-soft: #fff1f3;
+  --danger-ink: #be123c;
+  --warning: #d97706;
+  --warning-soft: #fffaeb;
+  --warning-ink: #b45309;
+
+  --chart-1: #5145e5;
+  --chart-2: #f97316;
+  --chart-3: #0ea5e9;
+  --chart-grid: #ececf1;
+  /* Categorical series, fixed order (validated: CVD ΔE ≥ 9 adjacent, light surface). Never cycled. */
+  --series-1: #5145e5;
+  --series-2: #f97316;
+  --series-3: #0ea5e9;
+  --series-4: #e87ba4;
+  --series-5: #eda100;
+  --series-6: #1baf7a;
+
+  --shadow-color: 220 20% 20%;
+  --ring: color-mix(in oklab, var(--primary) 22%, transparent);
+  color-scheme: light;
+}
+
+.dark {
+  --canvas: #0b0b0f;
+  --surface: #131318;
+  --surface-2: #17171d;
+  --sidebar: #0f0f13;
+  --hover: #1d1d24;
+  --line: #26262e;
+  --line-soft: #1e1e25;
+  --ink: #f3f3f6;
+  --muted: #a1a1ad;
+  --faint: #6c6c78;
+
+  --primary: #7073ff;
+  --primary-hover: #8487ff;
+  --primary-soft: color-mix(in oklab, #7073ff 16%, transparent);
+  --primary-ink: #a5a8ff;
+  --brand-from: #6366f1;
+  --brand-to: #c084fc;
+
+  --success: #22c55e;
+  --success-soft: color-mix(in oklab, #22c55e 14%, transparent);
+  --success-ink: #4ade80;
+  --danger: #f43f5e;
+  --danger-soft: color-mix(in oklab, #f43f5e 14%, transparent);
+  --danger-ink: #fb7185;
+  --warning: #f59e0b;
+  --warning-soft: color-mix(in oklab, #f59e0b 14%, transparent);
+  --warning-ink: #fbbf24;
+
+  --chart-1: #8183ff;
+  --chart-2: #fb923c;
+  --chart-3: #38bdf8;
+  --chart-grid: #24242c;
+  /* Same hues stepped for the dark surface (validated against #131318). */
+  --series-1: #7073ff;
+  --series-2: #d95926;
+  --series-3: #2a8fd6;
+  --series-4: #d55181;
+  --series-5: #c98500;
+  --series-6: #199e70;
+
+  --shadow-color: 0 0% 0%;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-sidebar: var(--sidebar);
+  --color-hover: var(--hover);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-ink: var(--primary-ink);
+  --color-brand-from: var(--brand-from);
+  --color-brand-to: var(--brand-to);
+  /* Legacy alias: the old green "Create" button now uses the brand treatment. */
+  --color-create: var(--primary);
+  --color-create-hover: var(--primary-hover);
+
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-success-ink: var(--success-ink);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-ink: var(--danger-ink);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-ink: var(--warning-ink);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-grid: var(--chart-grid);
+
+  --shadow-xs: 0 1px 2px hsl(var(--shadow-color) / 0.05);
+  --shadow-card: 0 1px 2px hsl(var(--shadow-color) / 0.04), 0 1px 3px hsl(var(--shadow-color) / 0.05);
+  --shadow-pop: 0 12px 32px -8px hsl(var(--shadow-color) / 0.18), 0 2px 6px hsl(var(--shadow-color) / 0.06);
+  --shadow-glow: 0 1px 2px hsl(var(--shadow-color) / 0.1), 0 4px 14px -4px color-mix(in oklab, var(--primary) 45%, transparent);
+
+  --animate-shimmer: shimmer 1.6s ease-in-out infinite;
+  --animate-fade-in: fade-in 140ms ease-out;
+  --animate-pop-in: pop-in 160ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  --animate-slide-in: slide-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --animate-sheet-in: sheet-in 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes slide-in {
+  from { transform: translateX(-100%); }
+  to { transform: none; }
+}
+@keyframes sheet-in {
+  from { transform: translateX(100%); }
+  to { transform: none; }
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv11", "ss01";
+}
+
+/* Dense numeric columns. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--primary) 24%, transparent);
+}
+
+/* Controls and custom widgets (inputs, buttons, [tabindex] charts) draw their own focus rings; this
+   covers links. Kept narrow on purpose: unlayered rules here override utilities like focus:outline-none. */
+a:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* Quiet scrollbars that follow the theme. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

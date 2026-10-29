@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `review_events_open_idx` ON `review_events` (`ad_id`,`to_status`) WHERE "review_events"."acknowledged_at" is null;
