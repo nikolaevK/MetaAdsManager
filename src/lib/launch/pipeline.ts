@@ -5,7 +5,7 @@ import { db } from "@/lib/db";
 import { adAccounts, creativeAssets, creatives, launches, type LaunchStatus } from "@/lib/db/schema";
 import { enqueue, PRIORITY } from "@/lib/jobs/queue";
 import type { HandlerResult } from "@/lib/jobs/types";
-import { graphBatch } from "@/lib/meta/client";
+import { graphBatch, graphBatchUpdate } from "@/lib/meta/client";
 import { errorMessage, MetaApiError } from "@/lib/meta/errors";
 import { ensureMetaMedia } from "@/lib/meta/media";
 import { DEFAULT_PLACEMENTS } from "@/lib/meta/editor-types";
@@ -19,6 +19,7 @@ import {
   creativePayload,
   creativePositions,
   creativeRef,
+  registrableDomain,
   type MediaRef,
 } from "./payloads";
 import { normalizeSpec, type LaunchSpec } from "./spec";
@@ -127,33 +128,40 @@ export async function buildLaunch(launchId: string): Promise<HandlerResult> {
     }),
   );
 
-  // 3. Campaign
-  await update(launchId, { step: "Creating campaign" });
-  await ledger.createMany([
-    {
-      ref: "campaign",
-      kind: "campaign",
-      name: spec.campaign.name,
-      edge: `${account.id}/campaigns`,
-      payload: campaignPayload(spec, account.currency),
-      reconcileEdge: `${account.id}/campaigns`,
-    },
-  ]);
-  const campaignId = ledger.id("campaign");
-  await update(launchId, { metaCampaignId: campaignId });
+  // 3. Campaign (unless the launch adds to an existing one)
+  const target = spec.target;
+  let campaignId: string;
+  if (target.mode === "new") {
+    await update(launchId, { step: "Creating campaign" });
+    await ledger.createMany([
+      {
+        ref: "campaign",
+        kind: "campaign",
+        name: spec.campaign.name,
+        edge: `${account.id}/campaigns`,
+        payload: campaignPayload(spec, account.currency),
+        reconcileEdge: `${account.id}/campaigns`,
+      },
+    ]);
+    campaignId = ledger.id("campaign");
+    await update(launchId, { metaCampaignId: campaignId });
+  } else campaignId = target.campaignId;
 
-  // 4. Ad sets
-  await update(launchId, { step: "Creating ad sets" });
-  await ledger.createMany(
-    spec.adsets.map((s, j) => ({
-      ref: `adset:${j}`,
-      kind: "adset" as const,
-      name: s.name,
-      edge: `${account.id}/adsets`,
-      payload: adsetPayload(spec, s, campaignId, account.currency),
-      reconcileEdge: `${campaignId}/adsets`,
-    })),
-  );
+  // 4. Ad sets (unless the ads go into an existing one)
+  if (target.mode !== "adset") {
+    await update(launchId, { step: "Creating ad sets" });
+    await ledger.createMany(
+      spec.adsets.map((s, j) => ({
+        ref: `adset:${j}`,
+        kind: "adset" as const,
+        name: s.name,
+        edge: `${account.id}/adsets`,
+        payload: adsetPayload(spec, s, campaignId, account.currency),
+        reconcileEdge: `${campaignId}/adsets`,
+      })),
+    );
+  }
+  const adsetId = (j: number) => (target.mode === "adset" ? target.adsetId : ledger.id(`adset:${j}`));
 
   // 5. Ads: every ad definition in every ad set.
   await update(launchId, { step: "Creating ads" });
@@ -164,8 +172,11 @@ export async function buildLaunch(launchId: string): Promise<HandlerResult> {
         kind: "ad" as const,
         name: ad.name,
         edge: `${account.id}/ads`,
-        payload: adPayload(ad.name, ledger.id(`adset:${j}`), ledger.id(creativeRef(i, groups.groupOf[j]))),
-        reconcileEdge: `${ledger.id(`adset:${j}`)}/ads`,
+        payload: adPayload(ad.name, adsetId(j), ledger.id(creativeRef(i, groups.groupOf[j])), {
+          conversionDomain: spec.adsets[j].destination === "website" && spec.adsets[j].pixelId ? registrableDomain(ad.url) : undefined,
+          appId: spec.adsets[j].destination === "app" ? spec.adsets[j].app?.id : undefined,
+        }),
+        reconcileEdge: `${adsetId(j)}/ads`,
       })),
     ),
   );
@@ -196,6 +207,9 @@ export async function failBuild(launchId: string, err: unknown): Promise<void> {
 
 const DELETE_ORDER = ["ad", "adset", "campaign", "creative"] as const;
 
+/** Meta's "object does not exist" (code 100, subcode 33). */
+const isGone = (err: MetaApiError) => err.code === 100 && (err.subcode === 33 || /does not exist|has been deleted/i.test(err.message));
+
 /**
  * Deletes created objects children-first. Idempotent: already-deleted objects count as done.
  * Only runs while the launch is "rolling_back", so a re-queued old job can't touch a live launch.
@@ -215,11 +229,14 @@ export async function rollbackLaunch(launchId: string, finalStatus: LaunchStatus
       rows.map((r) => ({ method: "DELETE" as const, relativeUrl: r.metaId! })),
       { accountId: ctx.account.id, mode: "background" },
     );
+    const deleted: string[] = [];
     for (const [k, r] of results.entries()) {
-      // code 100 = object no longer exists (e.g. removed with its parent).
-      if (r.ok || r.error.code === 100) await ledger.markStatus(rows[k].ref, "deleted");
+      // Already gone (e.g. removed with its parent) counts as deleted; any other error, including other code-100
+      // validation errors, means the object may still exist and the rollback must be retried.
+      if (r.ok || isGone(r.error)) deleted.push(rows[k].ref);
       else firstError ??= r.error;
     }
+    await ledger.markMany(deleted, "deleted");
   }
   if (firstError) throw firstError;
 
@@ -242,7 +259,8 @@ export async function failRollback(launchId: string, err: unknown): Promise<void
 
 /**
  * Activates ads → ad sets → campaign. The campaign goes last, so until it is ACTIVE nothing can
- * deliver; on any failure everything touched is re-paused.
+ * deliver; on any failure everything touched is re-paused. Only objects the launch created are switched
+ * on: an existing campaign or ad set it added to keeps whatever status it has.
  */
 export async function activateLaunch(launchId: string): Promise<HandlerResult> {
   const ctx = await load(launchId);
@@ -250,12 +268,12 @@ export async function activateLaunch(launchId: string): Promise<HandlerResult> {
   const { account } = ctx;
   const ledger = await Ledger.load(launchId, account.id);
   const ids = (kind: string) => ledger.all().filter((r) => r.kind === kind && r.status === "created").map((r) => r.metaId!);
-  const stages = [ids("ad"), ids("adset"), [ledger.id("campaign")]];
+  const stages = [ids("ad"), ids("adset"), ids("campaign")].filter((s) => s.length > 0);
 
   const activated: string[] = [];
   try {
     for (const stage of stages) {
-      const results = await graphBatch(
+      const results = await graphBatchUpdate(
         stage.map((id) => ({ method: "POST" as const, relativeUrl: id, params: { status: "ACTIVE" } })),
         { accountId: account.id, mode: "interactive" },
       );
@@ -265,7 +283,7 @@ export async function activateLaunch(launchId: string): Promise<HandlerResult> {
     }
   } catch (err) {
     if (activated.length) {
-      await graphBatch(
+      await graphBatchUpdate(
         activated.reverse().map((id) => ({ method: "POST" as const, relativeUrl: id, params: { status: "PAUSED" } })),
         { accountId: account.id, mode: "interactive" },
       ).catch(() => undefined);
@@ -284,8 +302,27 @@ export async function activateLaunch(launchId: string): Promise<HandlerResult> {
 
 export async function failActivation(launchId: string, err: unknown): Promise<void> {
   const msg = err instanceof MetaApiError ? err.display : errorMessage(err);
+  // The failure may have come after everything was switched on (e.g. while recording success), so pause what the
+  // launch created before saying so: campaign first, which stops delivery fastest.
+  let paused = false;
+  try {
+    const ctx = await load(launchId);
+    if (ctx) {
+      const ledger = await Ledger.load(launchId, ctx.account.id);
+      const ids = (["campaign", "adset", "ad"] as const).flatMap((kind) => ledger.all().filter((r) => r.kind === kind && r.status === "created").map((r) => r.metaId!));
+      const results = await graphBatchUpdate(
+        ids.map((id) => ({ method: "POST" as const, relativeUrl: id, params: { status: "PAUSED" } })),
+        { accountId: ctx.account.id, mode: "interactive" },
+      );
+      paused = results.every((r) => r.ok);
+    }
+  } catch (pauseErr) {
+    console.error(`[launch] couldn't re-pause launch ${launchId}:`, pauseErr);
+  }
   await transition(launchId, ["activating"], {
     status: "activation_failed",
-    error: `Activation failed, everything was re-paused: ${msg}`,
+    error: paused
+      ? `Activation failed, everything was re-paused: ${msg}`
+      : `Activation failed and re-pausing didn't finish: ${msg}. Check the campaign in Ads Manager and pause anything still running.`,
   });
 }

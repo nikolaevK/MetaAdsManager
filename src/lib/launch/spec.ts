@@ -14,29 +14,12 @@ import {
 } from "./objectives";
 
 // FB + IG only. Positions are split by which asset (1:1 or 9:16) serves them.
-export const FACEBOOK_POSITIONS = [
-  "feed",
-  "profile_feed",
-  "marketplace",
-  "video_feeds",
-  "search",
-  "instream_video",
-  "story",
-  "facebook_reels",
-] as const;
-export const INSTAGRAM_POSITIONS = [
-  "stream",
-  "profile_feed",
-  "explore",
-  "explore_home",
-  "ig_search",
-  "story",
-  "reels",
-] as const;
+export const FACEBOOK_POSITIONS = ["feed", "profile_feed", "marketplace", "search", "instream_video", "story", "facebook_reels"] as const;
+export const INSTAGRAM_POSITIONS = ["stream", "profile_feed", "explore_home", "ig_search", "story", "reels", "profile_reels"] as const;
 
 export const VERTICAL_POSITIONS = {
   facebook: new Set<string>(["story", "facebook_reels"]),
-  instagram: new Set<string>(["story", "reels"]),
+  instagram: new Set<string>(["story", "reels", "profile_reels"]),
 };
 
 export const POSITION_LABELS: Record<string, string> = {
@@ -48,11 +31,12 @@ export const POSITION_LABELS: Record<string, string> = {
   instream_video: "In-stream video",
   story: "Stories",
   facebook_reels: "Reels",
+  notification: "Notifications",
   stream: "Feed",
-  explore: "Explore",
   explore_home: "Explore home",
   ig_search: "Search results",
   reels: "Reels",
+  profile_reels: "Profile reels",
 };
 
 export const CONVERSION_EVENTS = [
@@ -147,11 +131,21 @@ export const CREATIVE_FEATURES = [
   "translate_voiceover",
   "text_overlay_translation",
   "music_generation",
+  // Documented in v26 but left at Meta's default until opted out explicitly.
+  "enhance_cta",
+  "image_brightness_and_contrast",
+  "image_uncrop",
+  "video_auto_crop",
+  "video_filtering",
+  "video_uncrop",
+  "image_text_translation",
+  "pac_relaxation",
 ] as const;
 export type CreativeFeature = (typeof CREATIVE_FEATURES)[number];
 export const isCreativeFeature = (v: string): v is CreativeFeature => (CREATIVE_FEATURES as readonly string[]).includes(v);
 
 const metaId = z.string().regex(/^\d+$/, "Expected a numeric Meta id");
+const keepKnown = (known: readonly string[]) => (v: unknown) => (Array.isArray(v) ? v.filter((x) => known.includes(x)) : v);
 
 export const templateConfigSchema = z
   .object({
@@ -170,8 +164,9 @@ export const templateConfigSchema = z
       })
       .default({ clickDays: 7, viewDays: 1, engagedViewDays: 0 }),
     placements: z.object({
-      facebook: z.array(z.enum(FACEBOOK_POSITIONS)),
-      instagram: z.array(z.enum(INSTAGRAM_POSITIONS)),
+      // Templates saved before v26 may hold positions Meta has since removed (video_feeds, explore): drop them.
+      facebook: z.preprocess(keepKnown(FACEBOOK_POSITIONS), z.array(z.enum(FACEBOOK_POSITIONS))),
+      instagram: z.preprocess(keepKnown(INSTAGRAM_POSITIONS), z.array(z.enum(INSTAGRAM_POSITIONS))),
     }),
     devicePlatforms: z.array(z.enum(["mobile", "desktop"])).min(1).default(["mobile", "desktop"]),
     exclusionAudiences: z.array(z.object({ id: metaId, name: z.string() })).default([]),
@@ -207,7 +202,7 @@ export const DEFAULT_TEMPLATE_CONFIG: Omit<TemplateConfig, "pixelId"> = {
   attribution: { clickDays: 7, viewDays: 1, engagedViewDays: 0 },
   placements: {
     facebook: ["feed", "profile_feed", "story", "facebook_reels"],
-    instagram: ["stream", "profile_feed", "explore", "story", "reels"],
+    instagram: ["stream", "profile_feed", "story", "reels"],
   },
   devicePlatforms: ["mobile", "desktop"],
   exclusionAudiences: [],
@@ -226,10 +221,12 @@ export const CREATIVE_FEATURE_GROUPS: { label: string; features: { key: Creative
     label: "Image",
     features: [
       { key: "image_touchups", label: "Visual touch-ups" },
+      { key: "image_brightness_and_contrast", label: "Adjust brightness and contrast" },
+      { key: "image_uncrop", label: "Expand image" },
+      { key: "image_background_gen", label: "Generate backgrounds" },
       { key: "image_templates", label: "Add overlays" },
       { key: "image_animation", label: "Image animation" },
-      { key: "image_background_gen", label: "Expand image / generate background" },
-      { key: "add_text_overlay", label: "Add text overlays" },
+      { key: "image_text_translation", label: "Translate text in images" },
       { key: "replace_media_text", label: "Replace text in media" },
       { key: "multi_photo_to_video", label: "Turn photos into a video" },
     ],
@@ -237,9 +234,12 @@ export const CREATIVE_FEATURE_GROUPS: { label: string; features: { key: Creative
   {
     label: "Video",
     features: [
+      { key: "video_auto_crop", label: "Video touch-ups (auto-crop)" },
+      { key: "video_uncrop", label: "Expand video" },
+      { key: "video_filtering", label: "Video filters" },
       { key: "video_highlights", label: "Video highlights" },
       { key: "video_to_image", label: "Show a still image from the video" },
-      { key: "music_generation", label: "Add music" },
+      { key: "music_generation", label: "Generate music (AI)" },
       { key: "translate_voiceover", label: "Translate voice-over" },
     ],
   },
@@ -249,24 +249,27 @@ export const CREATIVE_FEATURE_GROUPS: { label: string; features: { key: Creative
       { key: "text_optimizations", label: "Text improvements" },
       { key: "text_translation", label: "Translate text" },
       { key: "text_overlay_translation", label: "Translate text overlays" },
-      { key: "description_automation", label: "Add descriptions" },
+      { key: "description_automation", label: "Dynamic description" },
       { key: "text_extraction_for_headline", label: "Use media text as headline" },
       { key: "text_extraction_for_tap_target", label: "Use media text for the tap target" },
       { key: "generate_cta", label: "Generate call to action" },
+      { key: "enhance_cta", label: "Enhance call to action" },
     ],
   },
   {
     label: "Destination & format",
     features: [
-      { key: "adapt_to_placement", label: "Adapt to placement" },
-      { key: "media_type_automation", label: "Dynamic media" },
+      { key: "adapt_to_placement", label: "Adapt to placement (fit 4:5 / 9:16)" },
+      { key: "pac_relaxation", label: "Flex media (use one ratio in every placement)" },
+      { key: "add_text_overlay", label: "Add dynamic overlays (catalog)" },
+      { key: "media_type_automation", label: "Allow product video (catalog)" },
       { key: "reveal_details_over_time", label: "Reveal details over time" },
       { key: "site_extensions", label: "Site links" },
       { key: "product_extensions", label: "Add catalog items" },
       { key: "show_summary", label: "Show summaries" },
       { key: "show_destination_blurbs", label: "Show destination details" },
       { key: "inline_comment", label: "Relevant comments" },
-      { key: "creative_stickers", label: "Add stickers" },
+      { key: "creative_stickers", label: "Sticker call to action" },
       { key: "profile_card", label: "Profile card" },
     ],
   },
@@ -297,6 +300,8 @@ const GOALS = [
   "POST_ENGAGEMENT",
   "CONVERSATIONS",
   "APP_INSTALLS",
+  "LEAD_GENERATION",
+  "QUALITY_LEAD",
 ] as const;
 
 export const adsetInputSchema = z.object({
@@ -311,9 +316,19 @@ export const adsetInputSchema = z.object({
   attribution: attributionSchema,
   bidAmount: money.optional(),
   roasFloor: z.number().min(0.01).max(1000).optional(),
+  /** Campaign budget (CBO) only: keep at least / at most this much of it on this ad set (per day or lifetime). */
+  minSpend: money.optional(),
+  maxSpend: money.optional(),
+  /** EU Digital Services Act: who benefits from and who pays for ads reaching the EU. */
+  dsaBeneficiary: z.string().trim().max(512).optional(),
+  dsaPayor: z.string().trim().max(512).optional(),
   audience: audienceSchema,
   placements: placementsSchema,
 });
+
+/** EU member states plus EEA countries the DSA transparency rules cover. */
+export const DSA_COUNTRIES = new Set(["AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE", "IS", "LI", "NO"]);
+export const reachesEu = (a: { locations: { kind: string; key: string }[] }) => a.locations.some((l) => l.kind === "country" && DSA_COUNTRIES.has(l.key));
 
 export const adInputSchema = z.object({
   name: z.string().trim().min(1).max(400),
@@ -325,12 +340,21 @@ export const adInputSchema = z.object({
   displayLink: z.string().trim().max(100).optional(),
   /** URL parameters appended to the website link; defaults to the client's UTM rule. */
   urlTags: z.string().trim().max(1000).optional(),
+  /** Instant form the ad opens in instant-form ad sets (a form on the ad's Page). */
+  leadFormId: metaId.optional(),
   cta: z.string().regex(/^[A-Z_]{2,40}$/),
   /** Advantage+ creative enhancements to keep ON; everything else in CREATIVE_FEATURES is opted out. */
   creativeFeaturesOptIn: z.array(z.enum(CREATIVE_FEATURES)).default([]),
+  /** Multi-advertiser ads (shown next to other businesses' ads). Meta opts creatives in unless told otherwise. */
+  multiAdvertiser: z.boolean().default(false),
+  /** Let Meta send people to the advertiser's Facebook / Instagram shop instead of the website (Meta's default). */
+  shopDestination: z.boolean().default(true),
   /** Flexible format: library files after the creative's own, for up to MAX_FLEXIBLE_FILES in all. */
   moreAssetIds: z.array(z.string().regex(/^[A-Za-z0-9-]{1,64}$/)).max(9).optional(),
 });
+
+/** Primary text options that end up in an asset feed (several texts, a Stories & Reels file, Flexible) are capped lower. */
+export const MAX_FEED_BODY = 1024;
 
 const assetId = z.string().regex(/^[A-Za-z0-9-]{1,64}$/);
 
@@ -354,11 +378,23 @@ export const MAX_LAUNCH_CREATIVES = 250;
 /** An ad as the builder submits it: media files instead of a library creative. */
 export const adDraftInputSchema = adInputSchema.omit({ creativeId: true }).extend({ media: mediaPickSchema });
 
+/**
+ * Where a launch's objects go: a new campaign, new ad sets (and their ads) in an existing campaign, or new
+ * ads in an existing ad set. Existing objects are never changed, activated or deleted by the launch.
+ */
+export const launchTargetSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("new") }),
+  z.object({ mode: z.literal("campaign"), campaignId: metaId }),
+  z.object({ mode: z.literal("adset"), campaignId: metaId, adsetId: metaId }),
+]);
+export type LaunchTarget = z.infer<typeof launchTargetSchema>;
+
 export const launchInputSchema = z.object({
   idempotencyKey: z.uuid(),
   draftId: z.string().max(64).optional(),
   clientId: z.string().min(1),
   adAccountId: z.string().regex(/^act_\d+$/),
+  target: launchTargetSchema.default({ mode: "new" }),
   templateId: z.string().min(1).optional(),
   pageId: metaId,
   instagramUserId: metaId.optional(),
@@ -370,6 +406,8 @@ export const launchInputSchema = z.object({
     budget: money.optional(),
     bidStrategy: z.enum(BID_STRATEGIES),
     spendCap: money.optional(),
+    /** Ad set budgets (daily): let Meta move up to 20% of each budget between ad sets. */
+    budgetSharing: z.boolean().default(false),
     specialAdCategories: z.array(z.enum(SPECIAL_AD_CATEGORIES)).max(5).default([]),
     specialAdCountries: z.array(country).max(50).default([]),
     startTime: z.iso.datetime({ offset: true }).optional(),
@@ -387,25 +425,31 @@ export type AdInput = z.infer<typeof adInputSchema>;
 export type LaunchSpec = Omit<LaunchInput, "idempotencyKey" | "draftId" | "ads"> & { version: 2; urlTags: string; ads: AdInput[] };
 
 /** Special ad categories that restrict age, gender and ZIP targeting. */
-const RESTRICTED_CATEGORIES = new Set(["HOUSING", "EMPLOYMENT", "CREDIT", "FINANCIAL_PRODUCTS_SERVICES"]);
+const RESTRICTED_CATEGORIES = new Set(["HOUSING", "EMPLOYMENT", "FINANCIAL_PRODUCTS_SERVICES"]);
 
 /** Cross-field checks zod can't express. Each issue points at the builder step it belongs to. */
 export function validateLaunch(
   input: Pick<LaunchInput, "campaign" | "adsets" | "instagramUserId"> & {
-    ads: { url?: string; primaryTexts?: string[]; headlines?: string[]; moreAssetIds?: string[]; media?: { verticalAssetId?: string; moreAssetIds?: string[] } }[];
+    target?: LaunchTarget;
+    ads: { url?: string; leadFormId?: string; primaryTexts?: string[]; headlines?: string[]; moreAssetIds?: string[]; media?: { verticalAssetId?: string; moreAssetIds?: string[] } }[];
   },
 ): LaunchIssue[] {
   const issues: LaunchIssue[] = [];
   const c = input.campaign;
+  const mode = input.target?.mode ?? "new";
   const cbo = c.budgetLevel === "campaign";
   const add = (step: LaunchIssue["step"], where: string, message: string) => issues.push({ step, where, message });
 
-  if (cbo && !c.budget) add("campaign", "Campaign", "Enter a campaign budget (Advantage campaign budget is on).");
-  if (c.budgetSchedule === "lifetime" && !c.endTime) add("campaign", "Campaign", "Lifetime budgets need an end date.");
-  if (c.startTime && c.endTime && c.endTime <= c.startTime) add("campaign", "Campaign", "The end date must be after the start date.");
-  if (c.bidStrategy === "LOWEST_COST_WITH_MIN_ROAS" && c.objective !== "OUTCOME_SALES") add("campaign", "Campaign", "A ROAS goal is only available for Sales campaigns.");
+  // An existing campaign already has its budget; only a new one needs it here.
+  if (mode === "new" && cbo && !c.budget) add("campaign", "Campaign", "Enter a campaign budget (Advantage campaign budget is on).");
+  if (mode !== "adset") {
+    if (c.budgetSchedule === "lifetime" && !c.endTime) add("campaign", "Campaign", "Lifetime budgets need an end date.");
+    if (c.startTime && c.endTime && c.endTime <= c.startTime) add("campaign", "Campaign", "The end date must be after the start date.");
+  }
+  if (mode === "new" && c.bidStrategy === "LOWEST_COST_WITH_MIN_ROAS" && c.objective !== "OUTCOME_SALES") add("campaign", "Campaign", "A ROAS goal is only available for Sales campaigns.");
 
-  input.adsets.forEach((s, j) => {
+  // An existing ad set is used as it is in Meta; only new ones are checked.
+  (mode === "adset" ? [] : input.adsets).forEach((s, j) => {
     const where = `Ad set ${j + 1}`;
     if (!cbo && !s.budget) add("adsets", where, "Enter a budget (ad set budgets are on).");
     if (!OBJECTIVE_DESTINATIONS[c.objective].includes(s.destination))
@@ -426,6 +470,10 @@ export function validateLaunch(
     }
     const pixel = pixelUse(c.objective, s.destination, s.optimizationGoal, s.messagingApps);
     if (pixel === "required" && (!s.pixelId || !s.conversionEvent)) add("adsets", where, "Choose a pixel and conversion event.");
+    if (cbo && s.minSpend && s.maxSpend && s.minSpend > s.maxSpend) add("adsets", where, "The ad set's minimum spend can't be more than its maximum.");
+    if (cbo && c.budget && ((s.minSpend ?? 0) > c.budget || (s.maxSpend ?? 0) > c.budget)) add("adsets", where, "Ad set spend limits can't be more than the campaign budget.");
+    if (reachesEu(s.audience) && (!s.dsaBeneficiary || !s.dsaPayor))
+      add("adsets", where, "Ads that reach the EU need a beneficiary and a payer (Digital Services Act). Fill them in under “EU ads transparency”.");
     if ((c.bidStrategy === "COST_CAP" || c.bidStrategy === "LOWEST_COST_WITH_BID_CAP") && !s.bidAmount)
       add("adsets", where, c.bidStrategy === "COST_CAP" ? "Enter a cost per result goal." : "Enter a bid cap.");
     if (c.bidStrategy === "LOWEST_COST_WITH_MIN_ROAS" && (s.optimizationGoal !== "VALUE" || !s.roasFloor))
@@ -437,8 +485,13 @@ export function validateLaunch(
 
   const websiteNeeded = input.adsets.some((s) => needsWebsite(s.destination));
   const websiteOnly = input.adsets.every((s) => s.destination === "website");
+  const formNeeded = input.adsets.some((s) => s.destination === "instant_form");
   input.ads.forEach((a, i) => {
     if (websiteNeeded && !a.url) add("ads", `Ad ${i + 1}`, "Enter the website URL.");
+    if (formNeeded && !a.leadFormId) add("ads", `Ad ${i + 1}`, "Choose the instant form people fill in.");
+    const inFeed = (a.primaryTexts?.length ?? 0) > 1 || (a.headlines?.length ?? 0) > 1 || !!a.media?.verticalAssetId || !!(a.moreAssetIds?.length || a.media?.moreAssetIds?.length);
+    if (inFeed && a.primaryTexts?.some((t) => t.length > MAX_FEED_BODY))
+      add("ads", `Ad ${i + 1}`, `With several texts, a Stories & Reels file or Flexible files, each primary text can be up to ${MAX_FEED_BODY.toLocaleString("en-US")} characters.`);
     if (!websiteOnly && (a.moreAssetIds?.length || a.media?.moreAssetIds?.length))
       add("ads", `Ad ${i + 1}`, "Flexible format runs only in ad sets that send people to a website. Use Single image or video here.");
     // Meta rejects several text options on a creative customized per placement (error 1885878).
@@ -494,12 +547,14 @@ type LegacySpec = {
 /** Reads a stored launch spec, upgrading v1 (template-driven) specs to the builder's v2 shape. */
 export function normalizeSpec(raw: unknown): LaunchSpec {
   const s = raw as LaunchSpec | LegacySpec;
-  if ("version" in s && s.version === 2) return s;
+  // Specs saved before launches could target existing campaigns / ad sets always created a new campaign.
+  if ("version" in s && s.version === 2) return s.target ? s : { ...s, target: { mode: "new" } };
   const v1 = s as LegacySpec;
   // Older snapshots may predate template fields; fill them with today's defaults.
   const c: TemplateConfig = { ...DEFAULT_TEMPLATE_CONFIG, ...v1.config };
   return {
     version: 2,
+    target: { mode: "new" },
     clientId: v1.clientId,
     adAccountId: v1.adAccountId,
     templateId: v1.templateId,
@@ -513,6 +568,7 @@ export function normalizeSpec(raw: unknown): LaunchSpec {
       budgetSchedule: c.budgetSchedule,
       budget: v1.campaign.budget,
       bidStrategy: "LOWEST_COST_WITHOUT_CAP",
+      budgetSharing: false,
       specialAdCategories: [],
       specialAdCountries: [],
       startTime: v1.campaign.startTime,
@@ -550,6 +606,8 @@ export function normalizeSpec(raw: unknown): LaunchSpec {
       url: a.url,
       cta: a.cta,
       creativeFeaturesOptIn: c.creativeFeaturesOptIn,
+      multiAdvertiser: false,
+      shopDestination: true,
     })),
   };
 }

@@ -3,7 +3,8 @@ import { unstable_rethrow } from "next/navigation";
 import { z } from "zod";
 import { ForbiddenError } from "@/lib/auth/session";
 import { ConfigError } from "@/lib/env";
-import { MetaApiError, RateLimitedError } from "@/lib/meta/errors";
+import { isSchemaError } from "@/lib/db/migrations";
+import { isTransient, MetaApiError, RateLimitedError } from "@/lib/meta/errors";
 
 export type ActionState = {
   ok: boolean;
@@ -25,6 +26,8 @@ export function failure(err: unknown): ActionState {
   }
   if (err instanceof UserError || err instanceof ConfigError) return { ok: false, error: err.message };
   console.error("[action] unexpected error", err);
+  if (isSchemaError(err)) return { ok: false, error: "The database needs an update: run `npm run db:migrate`, then try again." };
+  if (isTransient(err)) return { ok: false, error: "The database or Meta didn't respond in time. Please try again in a moment." };
   return { ok: false, error: "Something went wrong. Please try again." };
 }
 

@@ -389,7 +389,7 @@ export const launches = sqliteTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index("launches_account_idx").on(t.adAccountId, t.createdAt)],
+  (t) => [index("launches_account_idx").on(t.adAccountId, t.createdAt), index("launches_client_idx").on(t.clientId, t.createdAt)],
 );
 
 export const LAUNCH_OBJECT_KINDS = ["creative", "campaign", "adset", "ad"] as const;
@@ -415,7 +415,8 @@ export const launchObjects = sqliteTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [uniqueIndex("launch_objects_ref_idx").on(t.launchId, t.ref)],
+  // meta_id: the approval lock looks objects up by their Meta id on every edit.
+  (t) => [uniqueIndex("launch_objects_ref_idx").on(t.launchId, t.ref), index("launch_objects_meta_idx").on(t.metaId)],
 );
 
 /** Campaign builder state, autosaved while someone builds a launch so nothing is lost on reload or navigation. */
@@ -438,7 +439,11 @@ export const launchDrafts = sqliteTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index("launch_drafts_client_idx").on(t.clientId, t.updatedAt), index("launch_drafts_launch_idx").on(t.launchId)],
+  (t) => [
+    index("launch_drafts_client_idx").on(t.clientId, t.updatedAt),
+    index("launch_drafts_launch_idx").on(t.launchId),
+    index("launch_drafts_account_idx").on(t.adAccountId, t.updatedAt),
+  ],
 );
 
 // ── Infrastructure ───────────────────────────────────────────────────────────
@@ -467,6 +472,10 @@ export const jobs = sqliteTable(
   },
   (t) => [
     index("jobs_ready_idx").on(t.status, t.runAt, t.priority),
+    // Scheduler ("discover ran recently?"), pruning of finished jobs, and the System page's recent list.
+    index("jobs_type_created_idx").on(t.type, t.createdAt),
+    index("jobs_finished_idx").on(t.finishedAt),
+    index("jobs_updated_idx").on(t.updatedAt),
     // Only one queued/running job per dedupe key; finished jobs don't block new ones.
     uniqueIndex("jobs_dedupe_active_idx")
       .on(t.dedupeKey)

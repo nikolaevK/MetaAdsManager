@@ -1,6 +1,6 @@
 import { Building2 } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
-import { Badge, cn } from "@/components/ui";
+import { Badge, cn, focusRing } from "@/components/ui";
 
 /** "Used by" summary shown in a convention / rule card header. */
 export function UsedBy({ names }: { names: string[] }) {
@@ -25,10 +25,10 @@ export function InsertChip({ className, ...props }: ComponentProps<"button">) {
     <button
       type="button"
       className={cn(
-        "inline-flex h-6 items-center rounded-md border border-line bg-surface-2 px-1.5 font-mono text-[11.5px] text-muted",
+        "inline-flex h-6 items-center rounded-md border border-line bg-surface-2 px-1.5 font-mono text-[11.5px] text-muted pointer-coarse:h-10 pointer-coarse:px-2.5",
         "shadow-[inset_0_-1px_0_var(--line)] transition-colors",
         "hover:border-primary/40 hover:bg-primary-soft hover:text-primary-ink hover:shadow-none",
-        "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--ring)]",
+        focusRing,
         className,
       )}
       {...props}
@@ -50,9 +50,4 @@ export function PreviewPanel({ title, aside, children }: { title: string; aside?
       {children}
     </div>
   );
-}
-
-/** Card footer holding Save / Delete. */
-export function FormFooter({ children }: { children: ReactNode }) {
-  return <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line-soft bg-surface-2 px-5 py-3">{children}</div>;
 }

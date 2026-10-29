@@ -9,6 +9,7 @@ import {
   ChevronsUpDown,
   Copy,
   Download,
+  Ellipsis,
   ImageIcon,
   Layers,
   ListFilter,
@@ -23,15 +24,17 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useLayoutEffect, useOptimistic, useState, useTransition, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useOptimistic, useRef, useState, useTransition, type ComponentProps, type ReactNode } from "react";
+import { useConfirm } from "@/components/confirm-dialog";
 import { toast } from "@/components/toast";
-import { buttonClass, Card, cn, EmptyState, Segmented, segmentClass, StatusDot } from "@/components/ui";
+import { buttonClass, Card, cn, EmptyState, focusRing, Segmented, segmentClass, StatusDot } from "@/components/ui";
 import { COLUMN_BY_KEY, type TableLevelKey } from "@/lib/columns";
 import { shortDate } from "@/lib/dates";
 import { delivery, formatMoney, formatNumber } from "@/lib/format";
-import { fromMinorUnits } from "@/lib/launch/payloads";
+import { fromMinorUnits } from "@/lib/money";
 import { BID_STRATEGY_LABELS, label, OBJECTIVE_LABELS, OPTIMIZATION_LABELS } from "@/lib/meta/labels";
 import type { Level } from "@/lib/meta/mutations";
 import { formatMetric, METRIC_BY_KEY, type MetricSums } from "@/lib/metrics";
@@ -39,9 +42,14 @@ import type { ColumnPrefs } from "@/lib/preferences";
 import type { SortKey, TableRow } from "@/lib/queries/manage";
 import { saveColumnPrefsAction } from "../preferences";
 import { duplicateAction, setStatusAction, updateBudgetAction } from "./actions";
-import { BulkEditDialog } from "./bulk-edit";
 import { ColumnPicker } from "./column-picker";
-import { EditorSheet, type EditorTarget, type ParentOptions } from "./editor/sheet";
+import { Switch } from "./editor/fields";
+import type { EditorTarget } from "./editor/sheet";
+
+// Only needed after a click, so their code loads on demand. `ssr: false` also gives each its own Suspense boundary:
+// without one, the first load suspends the whole page, whose hide/cleanup closes the sheet before it ever shows.
+const EditorSheet = dynamic(() => import("./editor/sheet").then((m) => m.EditorSheet), { ssr: false });
+const BulkEditDialog = dynamic(() => import("./bulk-edit").then((m) => m.BulkEditDialog), { ssr: false });
 
 type TableLevel = TableLevelKey;
 
@@ -80,7 +88,6 @@ type Props = {
   range: { since: string; until: string };
   accountId: string;
   clientId: string | null;
-  parents: ParentOptions;
   /** Search / filter / date controls, rendered between the level tabs and the table. */
   toolbar?: ReactNode;
 };
@@ -93,6 +100,7 @@ export function AdsTable(props: Props) {
   const router = useRouter();
   const [bulkOpen, setBulkOpen] = useState(false);
   const [pending, startTransition] = useTransition();
+  const confirm = useConfirm();
   const [statuses, setOptimisticStatus] = useOptimistic(
     new Map(rows.map((r) => [r.id, r.status])),
     (state, change: { ids: string[]; status: string }) => {
@@ -160,6 +168,29 @@ export function AdsTable(props: Props) {
       if (res?.ok) setSelected(new Set());
       return res;
     });
+
+  const archive = async () => {
+    const ids = selectedIds;
+    const ok = await confirm({
+      title: `Archive ${plural(ids.length, lvl.noun.replace(/s$/, ""), lvl.noun)}?`,
+      body: "Archived items stop delivering and leave this list.",
+      confirmLabel: "Archive",
+      tone: "danger",
+    });
+    if (ok) changeStatus(ids, "ARCHIVED");
+  };
+
+  const secondary: BulkAction[] = [
+    { icon: SlidersHorizontal, label: "Bulk edit", disabled: pending, onClick: () => setBulkOpen(true) },
+    {
+      icon: Copy,
+      label: "Duplicate",
+      disabled: pending || selected.size !== 1,
+      title: selected.size !== 1 ? "Select exactly one to duplicate" : undefined,
+      onClick: () => run(() => duplicateAction({ level: lvl.one, id: selectedIds[0] })),
+    },
+    { icon: Archive, label: "Archive", danger: true, disabled: pending, onClick: archive },
+  ];
 
   const allSelected = rows.length > 0 && selected.size === rows.length;
   const someSelected = selected.size > 0 && !allSelected;
@@ -272,8 +303,19 @@ export function AdsTable(props: Props) {
       : level === "ads"
         ? (filter.adsets.length === 1 ? filter.adsets[0] : undefined)
         : undefined;
-  // New campaigns are built in the campaign builder; ad sets and ads in the side sheet.
-  const create = () => (lvl.one === "campaign" ? router.push("/launches/new") : setEditor({ mode: "create", level: lvl.one, parentId: createParent }));
+  // Everything is built in the campaign builder: a new campaign, or new ad sets / ads added to an existing one.
+  const create = () =>
+    router.push(
+      lvl.one === "campaign"
+        ? "/launches/new"
+        : lvl.one === "adset"
+          ? createParent
+            ? `/launches/new?campaign=${createParent}`
+            : "/launches/new?add=adsets"
+          : createParent
+            ? `/launches/new?adset=${createParent}`
+            : "/launches/new?add=ads",
+    );
 
   return (
     <div className="flex min-w-0 flex-col gap-3">
@@ -329,11 +371,7 @@ export function AdsTable(props: Props) {
             <Download aria-hidden /> <span className="max-sm:sr-only">Export</span>
           </button>
           {canEdit && (
-            <button
-              type="button"
-              className={buttonClass("create", "md")}
-              onClick={create}
-            >
+            <button type="button" className={buttonClass("primary", "md")} onClick={create}>
               <Plus aria-hidden /> Create
             </button>
           )}
@@ -348,16 +386,18 @@ export function AdsTable(props: Props) {
             <thead className="sticky top-0 z-20">
               <tr className="text-left text-[12px] text-muted">
                 <th scope="col" className={cn(TH, "sticky left-0 z-30 w-10 px-3")}>
-                  <input
-                    type="checkbox"
-                    aria-label="Select all"
-                    checked={allSelected}
-                    ref={(el) => {
-                      if (el) el.indeterminate = someSelected;
-                    }}
-                    onChange={toggleAll}
-                    className="size-4 cursor-pointer align-middle accent-primary"
-                  />
+                  <label className={CHECK_HIT}>
+                    <input
+                      type="checkbox"
+                      aria-label="Select all"
+                      checked={allSelected}
+                      ref={(el) => {
+                        if (el) el.indeterminate = someSelected;
+                      }}
+                      onChange={toggleAll}
+                      className="relative z-[1] size-4 cursor-pointer accent-primary"
+                    />
+                  </label>
                 </th>
                 <th scope="col" className={cn(TH, "sticky left-10 z-30 w-16 px-2")}>
                   {/* Fixed inner width keeps this column exactly 64px so the md:left-26 name column sits flush. */}
@@ -380,16 +420,12 @@ export function AdsTable(props: Props) {
                 return (
                   <tr key={r.id} className={cn("group transition-colors", isSelected ? ROW_SELECTED : ROW_IDLE)}>
                     <td className={cn(TD, "sticky left-0 z-10 px-3", isSelected && "shadow-[inset_2px_0_0_var(--primary)]")}>
-                      <input
-                        type="checkbox"
-                        aria-label={`Select ${r.name}`}
-                        checked={isSelected}
-                        onChange={() => toggleOne(r.id)}
-                        className="size-4 cursor-pointer align-middle accent-primary"
-                      />
+                      <label className={CHECK_HIT}>
+                        <input type="checkbox" aria-label={`Select ${r.name}`} checked={isSelected} onChange={() => toggleOne(r.id)} className="relative z-[1] size-4 cursor-pointer accent-primary" />
+                      </label>
                     </td>
                     <td className={cn(TD, "sticky left-10 z-10 px-2")}>
-                      <Toggle
+                      <Switch
                         on={status === "ACTIVE"}
                         disabled={!canEdit || pending}
                         label={`Turn ${status === "ACTIVE" ? "off" : "on"} ${r.name}`}
@@ -485,38 +521,25 @@ export function AdsTable(props: Props) {
         <div
           role="toolbar"
           aria-label="Bulk actions"
-          className="sticky bottom-4 z-40 mx-auto flex w-fit max-w-full animate-pop-in items-center gap-0.5 overflow-x-auto rounded-xl border border-line bg-surface p-1 shadow-pop"
+          className="sticky bottom-4 z-40 mx-auto flex w-fit max-w-full animate-pop-in flex-wrap items-center justify-center gap-0.5 rounded-xl border border-line bg-surface p-1 shadow-pop"
         >
           <span className="flex items-center gap-2 whitespace-nowrap py-1 pl-1.5 pr-2 text-[13px] font-medium">
             <span className="tabular grid h-5 min-w-5 place-items-center rounded-md bg-primary-soft px-1.5 text-[11.5px] font-semibold text-primary-ink ring-1 ring-inset ring-primary/20">
               {selected.size}
             </span>
-            selected
+            <span className="max-sm:sr-only">selected</span>
             {pending && <LoaderCircle className="size-3.5 animate-spin text-faint" aria-label="Working" />}
           </span>
           <Divider />
           <BulkButton icon={Power} label="Turn on" disabled={pending} onClick={() => changeStatus(selectedIds, "ACTIVE")} />
           <BulkButton icon={PowerOff} label="Turn off" disabled={pending} onClick={() => changeStatus(selectedIds, "PAUSED")} />
-          <BulkButton icon={SlidersHorizontal} label="Bulk edit" disabled={pending} onClick={() => setBulkOpen(true)} />
-          <BulkButton
-            icon={Copy}
-            label="Duplicate"
-            disabled={pending || selected.size !== 1}
-            title={selected.size !== 1 ? "Select exactly one to duplicate" : undefined}
-            onClick={() => run(() => duplicateAction({ level: lvl.one, id: selectedIds[0] }))}
-          />
-          <BulkButton
-            icon={Archive}
-            label="Archive"
-            danger
-            disabled={pending}
-            onClick={() => {
-              if (confirm(`Archive ${selected.size} ${lvl.noun}? Archived items stop delivering and leave this list.`))
-                changeStatus(selectedIds, "ARCHIVED");
-            }}
-          />
+          {/* Phones keep on/off labelled and move the rest into "More". */}
+          {secondary.map((a) => (
+            <BulkButton key={a.label} {...a} className="max-sm:hidden" />
+          ))}
+          <BulkMore actions={secondary} />
           <Divider />
-          <button type="button" aria-label="Clear selection" title="Clear selection" className={buttonClass("ghost", "icon")} onClick={() => setSelected(new Set())}>
+          <button type="button" aria-label="Clear selection" title="Clear selection" className={buttonClass("ghost", "icon", "pointer-coarse:size-10")} onClick={() => setSelected(new Set())}>
             <X />
           </button>
         </div>
@@ -537,7 +560,7 @@ export function AdsTable(props: Props) {
 
       {editor && (
         <EditorSheet
-          key={editor.mode === "edit" ? `${editor.level}:${editor.id}` : `new:${editor.level}`}
+          key={`${editor.level}:${editor.id}`}
           target={editor}
           accountId={props.accountId}
           clientId={props.clientId}
@@ -545,9 +568,7 @@ export function AdsTable(props: Props) {
           timeZone={props.timeZone}
           canEdit={canEdit}
           range={range}
-          parents={props.parents}
           onClose={() => setEditor(null)}
-          onNavigate={setEditor}
         />
       )}
     </div>
@@ -558,27 +579,68 @@ function Divider() {
   return <span aria-hidden className="mx-0.5 h-5 w-px shrink-0 bg-line" />;
 }
 
-function BulkButton({
-  icon: Icon,
-  label,
-  danger,
-  title,
-  ...props
-}: { icon: LucideIcon; label: string; danger?: boolean; disabled?: boolean; title?: string; onClick: () => void }) {
+type BulkAction = { icon: LucideIcon; label: string; danger?: boolean; disabled?: boolean; title?: string; onClick: () => void };
+
+const bulkButton = (danger?: boolean) =>
+  cn(
+    "inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 text-[13px] font-medium transition-colors max-sm:px-2 pointer-coarse:h-10",
+    "disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-4 [&_svg]:shrink-0",
+    focusRing,
+    danger ? "text-danger-ink hover:bg-danger-soft" : "text-ink hover:bg-hover [&_svg]:text-muted",
+  );
+
+function BulkButton({ icon: Icon, label, danger, title, className, ...props }: Omit<BulkAction, "onClick"> & ComponentProps<"button">) {
   return (
-    <button
-      type="button"
-      title={title ?? label}
-      className={cn(
-        "inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 text-[13px] font-medium transition-colors max-sm:px-2",
-        "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--ring)] disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-4 [&_svg]:shrink-0",
-        danger ? "text-danger-ink hover:bg-danger-soft" : "text-ink hover:bg-hover [&_svg]:text-muted",
-      )}
-      {...props}
-    >
+    <button type="button" title={title ?? label} className={cn(bulkButton(danger), className)} {...props}>
       <Icon aria-hidden />
-      <span className="max-sm:sr-only">{label}</span>
+      {label}
     </button>
+  );
+}
+
+/** Phone-only overflow menu for the secondary bulk actions; opens upward from the sticky bar. */
+function BulkMore({ actions }: { actions: BulkAction[] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  return (
+    <div ref={ref} className="relative sm:hidden">
+      <BulkButton ref={button} icon={Ellipsis} label="More" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)} />
+      {open && (
+        <div role="menu" aria-label="More bulk actions" className="absolute bottom-full right-0 mb-2 flex w-48 animate-pop-in flex-col rounded-xl border border-line bg-surface p-1 shadow-pop">
+          {actions.map(({ icon: Icon, label, danger, disabled, title, onClick }) => (
+            <button
+              key={label}
+              type="button"
+              role="menuitem"
+              disabled={disabled}
+              title={title}
+              onClick={() => {
+                // The item unmounts with the menu; a dialog it opens hands focus back to "More" instead.
+                button.current?.focus();
+                setOpen(false);
+                onClick();
+              }}
+              className={cn(bulkButton(danger), "w-full justify-start")}
+            >
+              <Icon aria-hidden />
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -588,35 +650,22 @@ function SortLink({ label, active, dir, href, alignEnd }: { label: string; activ
     <Link
       href={href}
       scroll={false}
-      className={cn("group/sort inline-flex items-center gap-1 transition-colors hover:text-ink", active && "text-ink", alignEnd && "flex-row-reverse")}
+      className={cn(
+        "group/sort inline-flex items-center gap-1 rounded-sm transition-colors hover:text-ink pointer-coarse:-my-3 pointer-coarse:py-3",
+        focusRing,
+        active && "text-ink",
+        alignEnd && "flex-row-reverse",
+      )}
     >
       {label}
       <Icon
         aria-hidden
-        className={cn("size-3.5 shrink-0 transition-opacity", active ? "text-primary" : "text-faint opacity-0 group-hover/sort:opacity-100")}
+        className={cn(
+          "size-3.5 shrink-0 transition-opacity",
+          active ? "text-primary" : "text-faint can-hover:opacity-0 can-hover:group-hover/sort:opacity-100 group-focus-visible/sort:opacity-100",
+        )}
       />
     </Link>
-  );
-}
-
-function Toggle({ on, disabled, label, onChange }: { on: boolean; disabled?: boolean; label: string; onChange: (on: boolean) => void }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      aria-label={label}
-      disabled={disabled}
-      onClick={() => onChange(!on)}
-      className={cn(
-        "relative flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 transition-colors duration-150",
-        "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-60",
-        on ? "bg-primary" : "bg-[color-mix(in_oklab,var(--faint)_45%,var(--line))]",
-      )}
-    >
-      {/* The knob stays light in both themes, like a physical switch. */}
-      <span className={cn("size-4 rounded-full bg-surface shadow-card transition-transform duration-150 dark:bg-ink", on && "translate-x-4")} />
-    </button>
   );
 }
 
@@ -625,8 +674,18 @@ type Run = (fn: () => Promise<{ ok: boolean; message?: string; error?: string } 
 const inlineInput =
   "h-8 rounded-md border border-primary bg-surface px-2 text-[13px] text-ink ring-4 ring-[var(--ring)] focus:outline-none";
 
-const rowAction =
-  "grid size-7 shrink-0 place-items-center rounded-md text-faint transition hover:bg-hover hover:text-ink focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100";
+// Row names are one 19px text line: taller on touch screens, with negative margins so the row height doesn't change.
+const TAP_Y = "pointer-coarse:-my-3 pointer-coarse:py-3";
+
+// Checkbox inside a 40px hit area (the cell is 40px wide), so rows are easy to select on touch screens.
+const CHECK_HIT = "relative flex size-4 cursor-pointer after:absolute after:-inset-3";
+
+// Revealed on row hover with a mouse; always visible (and tap-sized) on touch screens.
+const rowAction = cn(
+  "grid size-7 shrink-0 place-items-center rounded-md text-faint transition hover:bg-hover hover:text-ink pointer-coarse:size-10",
+  "can-hover:opacity-0 can-hover:group-hover:opacity-100 focus-visible:opacity-100",
+  focusRing,
+);
 
 function NameCell({
   row,
@@ -656,12 +715,17 @@ function NameCell({
       )}
       <div className="min-w-0 flex-1">
         {drill ? (
-          <Link href={drill} className="flex min-w-0 items-center gap-1 font-medium text-ink transition-colors hover:text-primary" title={row.name}>
+          <Link href={drill} className={cn("flex min-w-0 items-center gap-1 rounded-sm font-medium text-ink transition-colors hover:text-primary-ink", TAP_Y, focusRing)} title={row.name}>
             <span className="truncate">{row.name}</span>
-            <ChevronRight aria-hidden className="size-3.5 shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
+            <ChevronRight aria-hidden className="size-3.5 shrink-0 text-faint transition-opacity can-hover:opacity-0 can-hover:group-hover:opacity-100" />
           </Link>
         ) : (
-          <button type="button" onClick={() => onEdit("settings")} className="block max-w-full truncate text-left font-medium text-ink transition-colors hover:text-primary" title={row.name}>
+          <button
+            type="button"
+            onClick={() => onEdit("settings")}
+            className={cn("block max-w-full truncate rounded-sm text-left font-medium text-ink transition-colors hover:text-primary-ink", TAP_Y, focusRing)}
+            title={row.name}
+          >
             {row.name}
           </button>
         )}
@@ -729,10 +793,12 @@ function BudgetCell({ row, level, currency, canEdit, onSave }: { row: TableRow; 
         setEditing(true);
       }}
       title={canEdit ? "Edit budget" : undefined}
-      className="group/budget -mr-1.5 ml-auto flex flex-col items-end gap-0.5 rounded-md px-1.5 py-0.5 transition-colors hover:bg-hover disabled:hover:bg-transparent"
+      className={cn("group/budget -mr-1.5 ml-auto flex flex-col items-end gap-0.5 rounded-md px-1.5 py-0.5 transition-colors hover:bg-hover disabled:hover:bg-transparent", focusRing)}
     >
       <span className="inline-flex items-center gap-1 text-ink">
-        {canEdit && <Pencil aria-hidden className="size-3 text-faint opacity-0 transition-opacity group-hover/budget:opacity-100" />}
+        {canEdit && (
+          <Pencil aria-hidden className="size-3 text-faint transition-opacity can-hover:opacity-0 can-hover:group-hover/budget:opacity-100 group-focus-visible/budget:opacity-100" />
+        )}
         {formatMoney(fromMinorUnits(minor, currency), currency)}
       </span>
       <span className="text-[11.5px] capitalize text-muted">{kind}</span>

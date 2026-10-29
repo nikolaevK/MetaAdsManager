@@ -28,6 +28,20 @@ export const EVENT_ACTION_TYPES: Record<string, string[]> = {
   FIND_LOCATION: ["find_location_total", "find_location_website"],
 };
 
+/**
+ * Results for ad sets that optimize for something other than a pixel event, like Ads Manager's "Results" column.
+ * Keyed by optimization goal; the key doubles as the result type stored with each insights row.
+ */
+export const GOAL_ACTION_TYPES: Record<string, string[]> = {
+  LEAD_GENERATION: ["lead", "onsite_conversion.lead_grouped", "leadgen_grouped"],
+  QUALITY_LEAD: ["lead", "onsite_conversion.lead_grouped", "leadgen_grouped"],
+  CONVERSATIONS: ["onsite_conversion.messaging_conversation_started_7d"],
+  LANDING_PAGE_VIEWS: ["omni_landing_page_view", "landing_page_view"],
+  POST_ENGAGEMENT: ["post_engagement"],
+  THRUPLAY: ["video_thruplay_watched"],
+  APP_INSTALLS: ["omni_app_install", "mobile_app_install", "app_install"],
+};
+
 export const RESULT_LABELS: Record<string, string> = {
   PURCHASE: "Purchases",
   INITIATED_CHECKOUT: "Checkouts initiated",
@@ -47,6 +61,13 @@ export const RESULT_LABELS: Record<string, string> = {
   DONATE: "Donations",
   FIND_LOCATION: "Location searches",
   LINK_CLICKS: "Link clicks",
+  LEAD_GENERATION: "Leads",
+  QUALITY_LEAD: "Leads",
+  CONVERSATIONS: "Messaging conversations started",
+  LANDING_PAGE_VIEWS: "Landing page views",
+  POST_ENGAGEMENT: "Post engagements",
+  THRUPLAY: "ThruPlays",
+  APP_INSTALLS: "App installs",
 };
 
 /**

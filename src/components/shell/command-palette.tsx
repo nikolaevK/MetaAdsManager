@@ -11,15 +11,16 @@ import {
   RefreshCw,
   Search,
   Sun,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { createPortal } from "react-dom";
 import { selectAccount, syncNow } from "@/app/(app)/actions";
 import { logout } from "@/app/login/actions";
+import { Modal } from "@/components/modal";
 import { toast } from "@/components/toast";
-import { cn, Kbd } from "@/components/ui";
+import { cn, focusRing, Kbd } from "@/components/ui";
 import type { AccountOption } from "./account-switcher";
 import { NAV_GROUPS } from "./nav-items";
 import { setTheme } from "./theme-toggle";
@@ -146,91 +147,94 @@ export function CommandPalette({
 
   let index = -1;
   const groups = [...new Set(results.map((r) => r.group))];
-  // Portal: the sticky, blurred top bar would otherwise become the containing block for `fixed`.
-  return createPortal(
-    <div className="fixed inset-0 z-[90] flex items-start justify-center bg-black/40 p-4 pt-[12vh] backdrop-blur-[2px] animate-fade-in" onMouseDown={close}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Command palette"
-        onMouseDown={(e) => e.stopPropagation()}
-        className="w-full max-w-xl animate-pop-in overflow-hidden rounded-2xl border border-line bg-surface shadow-pop"
-      >
-        <div className="flex items-center gap-2.5 border-b border-line px-4">
-          <Search className="size-4 shrink-0 text-faint" />
-          <input
-            autoFocus
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setActive(0);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "ArrowDown") {
-                e.preventDefault();
-                setActive((i) => Math.min(i + 1, results.length - 1));
-              } else if (e.key === "ArrowUp") {
-                e.preventDefault();
-                setActive((i) => Math.max(i - 1, 0));
-              } else if (e.key === "Enter") {
-                e.preventDefault();
-                runAt(active);
-              } else if (e.key === "Escape") {
-                close();
-              }
-            }}
-            placeholder="Search pages, accounts and actions…"
-            aria-label="Search commands"
-            role="combobox"
-            aria-expanded="true"
-            aria-controls="command-list"
-            className="h-12 flex-1 bg-transparent text-[14px] placeholder:text-faint focus:outline-none"
-          />
-          <Kbd>Esc</Kbd>
-        </div>
-        <div ref={listRef} id="command-list" role="listbox" className="max-h-[min(60vh,26rem)] overflow-y-auto p-1.5">
-          {results.length === 0 && <p className="px-3 py-8 text-center text-[13px] text-muted">No results for “{query}”.</p>}
-          {groups.map((group) => (
-            <div key={group} className="mb-1">
-              <p className="px-2.5 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wider text-faint">{group}</p>
-              {results
-                .filter((r) => r.group === group)
-                .map((cmd) => {
-                  index++;
-                  const i = index;
-                  const Icon = cmd.icon;
-                  return (
-                    <button
-                      key={cmd.id}
-                      type="button"
-                      role="option"
-                      aria-selected={i === active}
-                      data-index={i}
-                      onMouseMove={() => setActive(i)}
-                      onClick={() => runAt(i)}
-                      className={cn(
-                        "flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left text-[13.5px]",
-                        i === active ? "bg-hover text-ink" : "text-muted",
-                      )}
-                    >
-                      <Icon className={cn("size-4 shrink-0", i === active ? "text-primary" : "text-faint")} />
-                      <span className="flex-1 truncate text-ink">{cmd.label}</span>
-                      {cmd.hint && <span className="truncate text-xs text-faint">{cmd.hint}</span>}
-                      {i === active && <CornerDownLeft className="size-3.5 text-faint" />}
-                    </button>
-                  );
-                })}
-            </div>
-          ))}
-        </div>
-        <div className="flex items-center gap-3 border-t border-line bg-surface-2 px-4 py-2 text-[11.5px] text-faint">
-          <span className="flex items-center gap-1"><Kbd>↑</Kbd><Kbd>↓</Kbd> navigate</span>
-          <span className="flex items-center gap-1"><Kbd>↵</Kbd> select</span>
-          <span className="ml-auto flex items-center gap-1"><Kbd>⌘</Kbd><Kbd>K</Kbd> toggle</span>
-        </div>
+  // Modal portals to <body>: the sticky, blurred top bar would otherwise become the containing block for `fixed`.
+  return (
+    <Modal
+      onClose={close}
+      aria-label="Command palette"
+      overlayClassName="z-[90] flex items-start justify-center p-4 pt-[12vh]"
+      className="w-full max-w-xl animate-pop-in overflow-hidden rounded-2xl border border-line bg-surface shadow-pop"
+    >
+      <div className="flex items-center gap-2.5 border-b border-line px-4">
+        <Search className="size-4 shrink-0 text-faint" />
+        <input
+          autoFocus
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setActive(0);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setActive((i) => Math.min(i + 1, results.length - 1));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setActive((i) => Math.max(i - 1, 0));
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              runAt(active);
+            }
+          }}
+          placeholder="Search pages, accounts and actions…"
+          aria-label="Search commands"
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="command-list"
+          className="h-12 flex-1 bg-transparent text-[14px] placeholder:text-faint focus:outline-none"
+        />
+        {/* Keyboard hints only where there's likely a keyboard; touch screens get a close button instead. */}
+        <Kbd className="pointer-coarse:hidden">Esc</Kbd>
+        <button
+          type="button"
+          aria-label="Close"
+          onClick={close}
+          className={cn("-mr-2 hidden size-10 shrink-0 place-items-center rounded-lg text-faint hover:bg-hover hover:text-ink pointer-coarse:grid", focusRing)}
+        >
+          <X className="size-4" />
+        </button>
       </div>
-    </div>,
-    document.body,
+      <div ref={listRef} id="command-list" role="listbox" className="max-h-[min(60vh,26rem)] overflow-y-auto p-1.5">
+        {results.length === 0 && <p className="px-3 py-8 text-center text-[13px] text-muted">No results for “{query}”.</p>}
+        {groups.map((group) => (
+          <div key={group} className="mb-1">
+            <p className="px-2.5 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wider text-faint">{group}</p>
+            {results
+              .filter((r) => r.group === group)
+              .map((cmd) => {
+                index++;
+                const i = index;
+                const Icon = cmd.icon;
+                return (
+                  <button
+                    key={cmd.id}
+                    type="button"
+                    role="option"
+                    aria-selected={i === active}
+                    data-index={i}
+                    onMouseMove={() => setActive(i)}
+                    onClick={() => runAt(i)}
+                    className={cn(
+                      "flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left text-[13.5px]",
+                      i === active ? "bg-hover text-ink" : "text-muted",
+                    )}
+                  >
+                    <Icon className={cn("size-4 shrink-0", i === active ? "text-primary" : "text-faint")} />
+                    <span className="flex-1 truncate text-ink">{cmd.label}</span>
+                    {cmd.hint && <span className="truncate text-xs text-faint">{cmd.hint}</span>}
+                    {i === active && <CornerDownLeft className="size-3.5 text-faint" />}
+                  </button>
+                );
+              })}
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center gap-3 border-t border-line bg-surface-2 px-4 py-2 text-[11.5px] text-faint pointer-coarse:hidden">
+        <span className="flex items-center gap-1"><Kbd>↑</Kbd><Kbd>↓</Kbd> navigate</span>
+        <span className="flex items-center gap-1"><Kbd>↵</Kbd> select</span>
+        <span className="ml-auto flex items-center gap-1"><Kbd>⌘</Kbd><Kbd>K</Kbd> toggle</span>
+      </div>
+    </Modal>
   );
 }
 
@@ -238,15 +242,18 @@ export function CommandTrigger({ className }: { className?: string }) {
   return (
     <button
       type="button"
+      aria-label="Search or jump to…"
+      aria-keyshortcuts="Meta+K Control+K"
       onClick={() => window.dispatchEvent(new Event("open-command-palette"))}
       className={cn(
-        "flex h-9 items-center gap-2 rounded-lg border border-line bg-surface px-2.5 text-[13px] text-faint shadow-xs transition-colors hover:bg-hover hover:text-muted",
+        "flex h-9 items-center gap-2 rounded-lg border border-line bg-surface px-2.5 text-[13px] text-faint shadow-xs transition-colors hover:bg-hover hover:text-muted pointer-coarse:h-10",
+        focusRing,
         className,
       )}
     >
-      <Search className="size-4" />
+      <Search className="size-4" aria-hidden />
       <span className="hidden flex-1 text-left sm:inline">Search or jump to…</span>
-      <span className="hidden items-center gap-0.5 sm:flex">
+      <span className="hidden items-center gap-0.5 sm:flex pointer-coarse:hidden" aria-hidden>
         <Kbd>⌘</Kbd>
         <Kbd>K</Kbd>
       </span>

@@ -1,5 +1,5 @@
 import "server-only";
-import { and, between, eq, inArray, sql, type SQL } from "drizzle-orm";
+import { and, between, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import { alias, type AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 import { db } from "@/lib/db";
 import { ads, adsets, campaigns, insightsDaily } from "@/lib/db/schema";
@@ -73,6 +73,38 @@ const search = (col: AnySQLiteColumn, q?: string) => (q ? sql`instr(lower(${col}
 
 const NO_ATTRS = { objective: null, bidStrategy: null, optimizationGoal: null, startTime: null, endTime: null, createdTime: null };
 
+/** Rows the table shows at most: the biggest spenders in the date range. getTableTotals() covers the rest. */
+export const MAX_ROWS = 2000;
+
+type TableFilter = { campaignIds?: string[]; adsetIds?: string[]; q?: string; status?: StatusFilter };
+
+/** KPI totals and object count for everything the filters match, however many rows the table shows. */
+export async function getTableTotals(accountId: string, level: TableLevel, range: DateRange, filter: TableFilter): Promise<MetricSums & { objects: number }> {
+  const dateCond = between(insightsDaily.date, range.since, range.until);
+  const status = filter.status === "spent" ? "all" : (filter.status ?? "all");
+  const [table, col] = level === "campaigns" ? [campaigns, insightsDaily.campaignId] : level === "adsets" ? [adsets, insightsDaily.adsetId] : [ads, insightsDaily.adId];
+  const scope =
+    level === "campaigns"
+      ? filter.campaignIds?.length
+        ? inArray(campaigns.id, filter.campaignIds)
+        : undefined
+      : level === "adsets"
+        ? and(filter.campaignIds?.length ? inArray(adsets.campaignId, filter.campaignIds) : undefined, filter.adsetIds?.length ? inArray(adsets.id, filter.adsetIds) : undefined)
+        : filter.adsetIds?.length
+          ? inArray(ads.adsetId, filter.adsetIds)
+          : filter.campaignIds?.length
+            ? inArray(ads.campaignId, filter.campaignIds)
+            : undefined;
+  // "Had spend in range" counts only the objects that spent; the sums are the same either way.
+  const counted = filter.status === "spent" ? sql`case when ${insightsDaily.spend} > 0 then ${table.id} end` : sql`${table.id}`;
+  const [row] = await db()
+    .select({ ...metricSums, objects: sql<number>`count(distinct ${counted})`.mapWith(Number) })
+    .from(table)
+    .leftJoin(insightsDaily, and(eq(col, table.id), dateCond))
+    .where(and(eq(table.adAccountId, accountId), scope, search(table.name, filter.q), statusWhere(table.status, table.effectiveStatus, status)));
+  return row ?? { ...emptySums(), objects: 0 };
+}
+
 export async function getTableRows(
   accountId: string,
   level: TableLevel,
@@ -106,7 +138,8 @@ async function queryRows(
         ),
       )
       .groupBy(campaigns.id)
-      .limit(2000);
+      .orderBy(desc(metricSums.spend))
+      .limit(MAX_ROWS);
     return rows.map(({ c, resultTypes, ...m }) => ({
       ...m,
       id: c.id,
@@ -156,7 +189,8 @@ async function queryRows(
         ),
       )
       .groupBy(adsets.id)
-      .limit(2000);
+      .orderBy(desc(metricSums.spend))
+      .limit(MAX_ROWS);
     return rows.map(({ s, parentName, parentDaily, parentLifetime, parentObjective, parentBid, resultTypes, ...m }) => {
       const usesCampaignBudget = s.dailyBudget === null && s.lifetimeBudget === null && (parentDaily !== null || parentLifetime !== null);
       return {
@@ -200,7 +234,8 @@ async function queryRows(
       ),
     )
     .groupBy(ads.id)
-    .limit(2000);
+    .orderBy(desc(metricSums.spend))
+    .limit(MAX_ROWS);
   return rows.map(({ a, parentName, parentEvent, parentGoal, resultTypes, ...m }) => ({
     ...m,
     ...NO_ATTRS,

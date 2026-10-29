@@ -23,7 +23,7 @@ export function NoAccount() {
         Add a client and connect one of the ad accounts your Meta token can access. Campaigns, insights and review status will sync
         automatically.
       </EmptyState>
-      <ol className="grid gap-px border-t border-line-soft bg-line-soft sm:grid-cols-3">
+      <ol className="grid grid-cols-1 gap-px border-t border-line-soft bg-line-soft sm:grid-cols-3">
         {STEPS.map((s, i) => (
           <li key={s.title} className="flex items-start gap-3 bg-surface-2 px-5 py-4">
             <span className="tabular grid size-6 shrink-0 place-items-center rounded-full bg-primary-soft text-[12px] font-semibold text-primary-ink">

@@ -80,7 +80,7 @@ export function CampaignForm({ data, currency, timeZone, canEdit, setDirty, onSa
           <Field label="Campaign name" htmlFor="c-name">
             <Input id="c-name" value={f.name} disabled={ro} maxLength={400} onChange={(e) => set("name", e.target.value)} />
           </Field>
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <ReadOnly label="Objective">{label(OBJECTIVE_LABELS, data.objective)}</ReadOnly>
             <ReadOnly label="Special ad categories">
               {data.specialAdCategories.length ? (
@@ -105,7 +105,7 @@ export function CampaignForm({ data, currency, timeZone, canEdit, setDirty, onSa
         >
           {data.budgetType ? (
             <>
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <Field label={`${data.budgetType === "daily" ? "Daily" : "Lifetime"} budget`} hint={data.budgetRemaining !== null ? `${formatMoney(data.budgetRemaining, currency)} remaining` : undefined} htmlFor="c-budget">
                   <MoneyInput id="c-budget" currency={currency} value={f.budget} disabled={ro} onChange={(v) => set("budget", v)} />
                 </Field>
@@ -141,7 +141,7 @@ export function CampaignForm({ data, currency, timeZone, canEdit, setDirty, onSa
         </Section>
 
         <Section title="Schedule" icon={CalendarClock} description={`Times are in the ad account's timezone (${timeZone}).`}>
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field label="Start" htmlFor="c-start">
               <Input id="c-start" type="datetime-local" value={f.startTime} disabled={ro} onChange={(e) => set("startTime", e.target.value)} />
             </Field>

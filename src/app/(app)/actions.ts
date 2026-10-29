@@ -11,6 +11,7 @@ import { db } from "@/lib/db";
 import { adAccounts } from "@/lib/db/schema";
 import { kickWorker } from "@/lib/jobs/kick";
 import { enqueue, PRIORITY } from "@/lib/jobs/queue";
+import { connectedAccount } from "@/lib/queries/ownership";
 import { ACCOUNT_COOKIE } from "@/lib/workspace";
 
 export async function selectAccount(accountId: string): Promise<void> {
@@ -31,7 +32,8 @@ export async function selectAccount(accountId: string): Promise<void> {
 export async function syncNow(accountId: string): Promise<ActionState> {
   try {
     const user = await requireUser("buyer");
-    const id = z.string().regex(/^act_\d+$/).parse(accountId);
+    // Only connected accounts sync (not any account the token happens to reach, e.g. one an admin disconnected).
+    const { id } = await connectedAccount(accountId);
     const opts = { adAccountId: id, priority: PRIORITY.launch };
     await enqueue("structure.sync", { adAccountId: id }, { ...opts, dedupeKey: `structure:${id}` });
     await enqueue("review.sync", { adAccountId: id }, { ...opts, dedupeKey: `review:${id}` });

@@ -19,8 +19,9 @@ import {
 } from "lucide-react";
 import { useState, useTransition } from "react";
 import { lookupAudiences, lookupPixels } from "@/app/(app)/lookups";
+import { useConfirm } from "@/components/confirm-dialog";
 import { useSettingsAction } from "@/components/settings-ui";
-import { Alert, Badge, Button, Field, Input, Select } from "@/components/ui";
+import { Alert, Badge, Button, cn, Field, focusRing, Input, Select } from "@/components/ui";
 import {
   CONVERSION_EVENTS,
   CREATIVE_FEATURES,
@@ -65,7 +66,8 @@ export function TemplateForm({
   const [config, setConfig] = useState<TemplateConfig>(template.config);
   const [countries, setCountries] = useState(template.config.countries.join(", "));
   const [errors, setErrors] = useState<Errors>({});
-  const { pending, run } = useSettingsAction();
+  const { pending, run, error } = useSettingsAction({ inlineErrors: true });
+  const confirm = useConfirm();
 
   const set = <K extends keyof TemplateConfig>(key: K, value: TemplateConfig[K]) => setConfig((c) => ({ ...c, [key]: value }));
   const err = (key: string) => errors[key]?.[0];
@@ -102,7 +104,7 @@ export function TemplateForm({
     >
       <fieldset disabled={!canEdit} className="contents">
         <Section icon={Settings2} title="Basics" description="Name, who can use it, and the campaign objective.">
-          <div className="grid gap-4 @xl:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 @xl:grid-cols-2">
             <Field label="Template name" htmlFor="tpl-name" error={err("name")}>
               <Input id="tpl-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={120} required />
             </Field>
@@ -135,7 +137,7 @@ export function TemplateForm({
         </Section>
 
         <Section icon={Crosshair} title="Conversion tracking" description="The pixel and standard event every ad set optimises for.">
-          <div className="grid gap-4 @xl:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 @xl:grid-cols-2">
             <PixelPicker value={config.pixelId} onChange={(v) => set("pixelId", v)} accounts={scopedAccounts} error={err("pixelId")} />
             <Field label="Conversion event" htmlFor="tpl-event" error={err("conversionEvent")}>
               <Select id="tpl-event" value={config.conversionEvent} onChange={(e) => set("conversionEvent", e.target.value as TemplateConfig["conversionEvent"])}>
@@ -150,7 +152,7 @@ export function TemplateForm({
         </Section>
 
         <Section icon={Wallet} title="Budget & attribution" description="How budget is split and which conversions Meta credits to your ads.">
-          <div className="grid gap-5 @2xl:grid-cols-2">
+          <div className="grid grid-cols-1 gap-5 @2xl:grid-cols-2">
             <FieldGroup legend="Budget type" error={err("budgetLevel")}>
               <RadioTiles
                 name="budgetLevel"
@@ -174,7 +176,7 @@ export function TemplateForm({
               />
             </FieldGroup>
           </div>
-          <div className="grid gap-4 border-t border-line-soft pt-5 @md:grid-cols-2 @3xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 border-t border-line-soft pt-5 @md:grid-cols-2 @3xl:grid-cols-4">
             <Field label="Default budget" htmlFor="tpl-budget" hint="In the ad account's currency." error={err("defaultBudget")}>
               <Input
                 id="tpl-budget"
@@ -263,7 +265,7 @@ export function TemplateForm({
                 key={f.label}
                 legend={
                   <span className="flex items-center gap-2.5">
-                    <span className="grid size-7 place-items-center rounded-md border border-primary/20 bg-primary-soft text-primary">
+                    <span className="grid size-7 place-items-center rounded-md border border-primary/20 bg-primary-soft text-primary-ink">
                       <AspectGlyph ratio={f.ratio} />
                     </span>
                     <span>
@@ -277,7 +279,7 @@ export function TemplateForm({
               >
                 <div className="flex flex-col gap-3">
                   {groups.map((g) => (
-                    <div key={g.id} className="grid gap-2 @xl:grid-cols-[6.5rem_minmax(0,1fr)] @xl:items-start">
+                    <div key={g.id} className="grid grid-cols-1 gap-2 @xl:grid-cols-[6.5rem_minmax(0,1fr)] @xl:items-start">
                       <p className="pt-0.5 text-[12px] font-medium text-muted @xl:pt-2.5">{g.label}</p>
                       <div className="grid grid-cols-2 gap-2 @2xl:grid-cols-3 @4xl:grid-cols-4">
                         {g.items.map((p) => (
@@ -335,7 +337,7 @@ export function TemplateForm({
               {optedIn} of {CREATIVE_FEATURES.length} allowed
             </Badge>
           </div>
-          <div className="grid gap-x-8 @xl:grid-cols-2 @4xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-x-8 @xl:grid-cols-2 @4xl:grid-cols-3">
             {CREATIVE_FEATURES.map((f) => (
               <ToggleRow
                 key={f}
@@ -362,7 +364,8 @@ export function TemplateForm({
       </fieldset>
 
       {canEdit && (
-        <div className="sticky bottom-3 z-20 sm:bottom-4">
+        <div className="sticky bottom-3 z-20 flex flex-col gap-2 sm:bottom-4">
+          {error && <Alert>{error}</Alert>}
           <div className="flex items-center gap-2 rounded-xl border border-line bg-surface/90 py-2 pl-4 pr-2 shadow-pop backdrop-blur-md">
             <div className="min-w-0 flex-1 text-[13px]">
               {Object.keys(errors).length > 0 ? (
@@ -396,9 +399,14 @@ export function TemplateForm({
                   disabled={pending}
                   aria-label="Delete template"
                   className="hover:bg-danger-soft hover:text-danger-ink"
-                  onClick={() => {
-                    if (confirm(`Delete template "${template.name}"? Existing launches keep their own copy of the settings.`))
-                      run(() => deleteTemplate({ id: template.id! }));
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: `Delete “${template.name}”?`,
+                      body: "Existing launches keep their own copy of its settings.",
+                      confirmLabel: "Delete template",
+                      tone: "danger",
+                    });
+                    if (ok) run(() => deleteTemplate({ id: template.id! }));
                   }}
                 >
                   <Trash2 /> <span className="hidden sm:inline">Delete</span>
@@ -512,7 +520,11 @@ function AudiencePicker({
                 type="button"
                 aria-label={`Remove ${a.name || a.id}`}
                 onClick={() => onChange(value.filter((x) => x.id !== a.id))}
-                className="grid size-5 shrink-0 place-items-center rounded text-faint transition-colors hover:bg-hover hover:text-ink"
+                className={cn(
+                  "relative grid size-5 shrink-0 place-items-center rounded text-faint transition-colors hover:bg-hover hover:text-ink",
+                  "pointer-coarse:after:absolute pointer-coarse:after:-inset-x-1.5 pointer-coarse:after:-inset-y-2.5",
+                  focusRing,
+                )}
               >
                 <X className="size-3.5" />
               </button>
@@ -578,7 +590,7 @@ function AudiencePicker({
             </div>
           )}
           <p className="pt-1 text-xs font-medium text-muted">Or add by id</p>
-          <div className="grid gap-2 @lg:grid-cols-[minmax(0,11rem)_minmax(0,1fr)_auto]">
+          <div className="grid grid-cols-1 gap-2 @lg:grid-cols-[minmax(0,11rem)_minmax(0,1fr)_auto]">
             <Input
               aria-label="Audience id"
               placeholder="Audience id"

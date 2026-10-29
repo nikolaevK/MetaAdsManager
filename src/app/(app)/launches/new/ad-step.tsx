@@ -1,13 +1,15 @@
 "use client";
 
-import { Check, ChevronDown, CopyCheck, Eye, Globe, ImageIcon, Images, MessageCircle, MessageSquareText, Plus, RotateCcw, Smartphone, Sparkles, X } from "lucide-react";
-import { useState } from "react";
+import { ChevronDown, ClipboardList, CopyCheck, Eye, Globe, ImageIcon, Images, MessageCircle, MessageSquareText, Plus, RotateCcw, Smartphone, Sparkles } from "lucide-react";
+import { useEffect, useState } from "react";
 import { MediaThumb } from "@/app/(app)/library/media-thumb";
+import { Enhancements, TextOptions } from "@/app/(app)/campaigns/editor/creative-fields";
 import { Choice, Counter, Section, Switch } from "@/app/(app)/campaigns/editor/fields";
-import { Button, buttonClass, cn, Field, Input, Select, Textarea } from "@/components/ui";
+import { Button, buttonClass, cn, Field, Input, Select } from "@/components/ui";
 import { MAX_ADS, MAX_TEXTS, mediaPick, type AdDraft, type BuilderState } from "@/lib/launch/draft";
-import { APP_CTAS, MESSAGING_APP_LABELS, WEBSITE_CTAS, type MessagingApp } from "@/lib/launch/objectives";
-import { CREATIVE_FEATURE_GROUPS, CREATIVE_FEATURES, MAX_FLEXIBLE_FILES, type CreativeFeature } from "@/lib/launch/spec";
+import { lookupLeadForms, type LeadFormOption } from "@/app/(app)/lookups";
+import { APP_CTAS, LEAD_CTAS, MESSAGING_APP_LABELS, WEBSITE_CTAS, type MessagingApp } from "@/lib/launch/objectives";
+import { MAX_FEED_BODY, MAX_FLEXIBLE_FILES } from "@/lib/launch/spec";
 import type { BuilderCreative } from "@/lib/queries/launches";
 import { CTA_LABELS } from "@/lib/meta/labels";
 import { NameField } from "./campaign-step";
@@ -17,11 +19,12 @@ import { ItemTabs } from "./parts";
 const CTA_TEXT: Record<string, string> = { ...CTA_LABELS, INSTALL_MOBILE_APP: "Install now", USE_APP: "Use app", PLAY_GAME: "Play game" };
 
 /** What the ad sets of this launch need from every ad. */
-export type AdNeeds = { website: boolean; app: boolean; messaging: MessagingApp[] };
+export type AdNeeds = { website: boolean; app: boolean; instantForm: boolean; messaging: MessagingApp[] };
 
 export function AdStep({
   state,
   names,
+  accountId,
   clientId,
   assets,
   creatives,
@@ -41,6 +44,7 @@ export function AdStep({
 }: {
   state: BuilderState;
   names: string[];
+  accountId: string;
   clientId: string;
   assets: Asset[];
   creatives: BuilderCreative[];
@@ -64,7 +68,7 @@ export function AdStep({
   const hasMedia = !!mediaPick(a);
 
   const ctas = needs.website ? WEBSITE_CTAS : needs.app ? APP_CTAS : [];
-  const messagingOnly = !needs.website && !needs.app;
+  const messagingOnly = !needs.website && !needs.app && !needs.instantForm;
 
   return (
     <div className="flex flex-col gap-4">
@@ -89,7 +93,7 @@ export function AdStep({
                   >
                     <span className="relative block">
                       <MediaThumb id={c.squareAssetId} kind={c.kind} alt={c.name} className="aspect-square w-full" />
-                      <span className="absolute inset-x-1.5 bottom-1.5 flex items-center justify-center gap-1 rounded-lg bg-surface/90 py-1 text-xs font-medium opacity-0 shadow-card ring-1 ring-line backdrop-blur transition-opacity group-hover:opacity-100">
+                      <span className="absolute inset-x-1.5 bottom-1.5 flex items-center justify-center gap-1 rounded-lg bg-surface/90 py-1 text-xs font-medium shadow-card ring-1 ring-line backdrop-blur transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-focus-visible:opacity-100">
                         <Plus className="size-3.5" aria-hidden /> New ad
                       </span>
                     </span>
@@ -167,18 +171,20 @@ export function AdStep({
         <TextOptions
           label="Primary text"
           values={a.primaryTexts}
-          max={2200}
+          // Several texts, a Stories & Reels file or Flexible put the texts in an asset feed, which caps them lower.
+          max={a.primaryTexts.length > 1 || a.headlines.length > 1 || a.format === "flexible" || !!a.verticalAssetId ? MAX_FEED_BODY : 2200}
+          limit={MAX_TEXTS}
           multiline
           placeholder="Tell people what your ad is about"
           onChange={(primaryTexts) => set({ primaryTexts })}
         />
-        <TextOptions label="Headline" values={a.headlines} max={255} placeholder="Write a short headline" onChange={(headlines) => set({ headlines })} />
+        <TextOptions label="Headline" values={a.headlines} max={255} limit={MAX_TEXTS} placeholder="Write a short headline" onChange={(headlines) => set({ headlines })} />
         <Field label={<span className="flex items-center justify-between">Description <Counter value={a.description} max={255} /></span>} hint="Optional. Shown under the headline in some placements.">
           <Input value={a.description} maxLength={255} onChange={(e) => set({ description: e.target.value })} />
         </Field>
       </Section>
 
-      <Section title="Destination" icon={needs.website ? Globe : needs.app ? Smartphone : MessageCircle} description="Where people go when they tap the ad. The conversion location is set on each ad set.">
+      <Section title="Destination" icon={needs.website ? Globe : needs.instantForm ? ClipboardList : needs.app ? Smartphone : MessageCircle} description="Where people go when they tap the ad. The conversion location is set on each ad set.">
         {needs.website && (
           <div className="flex flex-col gap-4">
             <p className="flex items-center gap-1.5 text-[13px] font-medium">
@@ -187,7 +193,7 @@ export function AdStep({
             <Field label="Website URL" error={a.url && !/^https?:\/\/[^\s.]+\.[^\s]+$/.test(a.url) ? "Enter a full URL starting with https://" : undefined}>
               <Input type="url" placeholder="https://example.com/product" value={a.url} onChange={(e) => set({ url: e.target.value.trim() })} />
             </Field>
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Field label="Display link" hint="Optional. Shown instead of the full URL, e.g. example.com/offer">
                 <Input value={a.displayLink} maxLength={100} placeholder="example.com" onChange={(e) => set({ displayLink: e.target.value })} />
               </Field>
@@ -206,7 +212,7 @@ export function AdStep({
                 <span className="flex items-center justify-between gap-2">
                   URL parameters
                   {a.urlTags !== defaultUrlTags && (
-                    <button type="button" onClick={() => set({ urlTags: defaultUrlTags })} className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
+                    <button type="button" onClick={() => set({ urlTags: defaultUrlTags })} className="inline-flex items-center gap-1 text-xs font-medium text-primary-ink hover:underline">
                       <RotateCcw className="size-3" aria-hidden /> Client default
                     </button>
                   )}
@@ -217,6 +223,16 @@ export function AdStep({
               <Input value={a.urlTags} className="font-mono text-[12.5px]" onChange={(e) => set({ urlTags: e.target.value })} />
             </Field>
           </div>
+        )}
+        {needs.instantForm && (
+          <LeadFormFields
+            accountId={accountId}
+            pageId={state.pageId}
+            value={a.leadFormId}
+            cta={a.cta}
+            showCta={!needs.website && !needs.app}
+            onChange={(p) => set(p)}
+          />
         )}
         {needs.app && (
           <div className="flex flex-col gap-3">
@@ -251,9 +267,26 @@ export function AdStep({
         {state.ads.length > 1 && (
           <div>
             <button type="button" onClick={onApplyToAll} className={buttonClass("subtle", "sm")}>
-              <CopyCheck /> Apply this text, destination and enhancements to all ads
+              <CopyCheck /> Apply this text, destination and automation settings to all ads
             </button>
           </div>
+        )}
+      </Section>
+
+      <Section title="Meta automations" icon={Sparkles} description="Placements and destinations Meta adds unless the ad says otherwise.">
+        <AutomationToggle
+          label="Multi-advertiser ads"
+          body="Meta may show this ad in a unit next to other businesses' ads (e.g. after someone engages with a similar ad)."
+          on={a.multiAdvertiser}
+          onChange={(multiAdvertiser) => set({ multiAdvertiser })}
+        />
+        {needs.website && (
+          <AutomationToggle
+            label="Send people to your shop when it fits"
+            body="If the business has a Facebook or Instagram shop, Meta may open it instead of the website. Off = always the website."
+            on={a.shopDestination}
+            onChange={(shopDestination) => set({ shopDestination })}
+          />
         )}
       </Section>
 
@@ -262,113 +295,96 @@ export function AdStep({
   );
 }
 
-function TextOptions({
-  label,
-  values,
-  max,
-  multiline,
-  placeholder,
+/** Instant-form ads open a form on the ad's Page; forms are read from the Page (needs the system user on the Page). */
+function LeadFormFields({
+  accountId,
+  pageId,
+  value,
+  cta,
+  showCta,
   onChange,
 }: {
-  label: string;
-  values: string[];
-  max: number;
-  multiline?: boolean;
-  placeholder: string;
-  onChange: (v: string[]) => void;
+  accountId: string;
+  pageId: string;
+  value: string;
+  cta: string;
+  showCta: boolean;
+  onChange: (p: Partial<AdDraft>) => void;
 }) {
-  const list = values.length ? values : [""];
+  const [forms, setForms] = useState<{ pageId: string; items: LeadFormOption[] | null; error?: string } | null>(null);
+  const [typing, setTyping] = useState(false);
+  useEffect(() => {
+    if (!/^\d+$/.test(pageId)) return;
+    let live = true;
+    lookupLeadForms(accountId, pageId).then((res) => live && setForms(res.ok ? { pageId, items: res.items } : { pageId, items: [], error: res.error }));
+    return () => {
+      live = false;
+    };
+  }, [accountId, pageId]);
+  const current = forms?.pageId === pageId ? forms : null;
+  const list = current?.items ?? [];
+  const manual = typing || (!!value && !list.some((f) => f.id === value)) || (current !== null && list.length === 0);
   return (
-    <fieldset className="flex flex-col gap-2">
-      <legend className="mb-1.5 flex w-full items-center justify-between text-[13px] font-medium">
-        {label}
-        <span className="tabular text-xs font-normal text-faint">
-          {list.length}/{MAX_TEXTS}
-        </span>
-      </legend>
-      {list.map((v, k) => (
-        <div key={k} className="flex items-start gap-2">
-          <div className="min-w-0 flex-1">
-            {multiline ? (
-              <Textarea rows={k === 0 ? 4 : 3} value={v} maxLength={max} placeholder={k === 0 ? placeholder : `${label} option ${k + 1}`} aria-label={`${label} ${k + 1}`} onChange={(e) => onChange(list.map((x, j) => (j === k ? e.target.value : x)))} />
-            ) : (
-              <Input value={v} maxLength={max} placeholder={k === 0 ? placeholder : `${label} option ${k + 1}`} aria-label={`${label} ${k + 1}`} onChange={(e) => onChange(list.map((x, j) => (j === k ? e.target.value : x)))} />
-            )}
-            <div className="mt-0.5 flex justify-end">
-              <Counter value={v} max={max} />
-            </div>
-          </div>
-          {list.length > 1 && (
-            <button type="button" aria-label={`Remove ${label.toLowerCase()} ${k + 1}`} title="Remove" onClick={() => onChange(list.filter((_, j) => j !== k))} className={buttonClass("ghost", "icon", "mt-0.5 hover:bg-danger-soft hover:text-danger-ink")}>
-              <X />
-            </button>
+    <div className="flex flex-col gap-3">
+      <p className="flex items-center gap-1.5 text-[13px] font-medium">
+        <ClipboardList className="size-3.5 text-faint" aria-hidden /> Instant form
+      </p>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Field
+          label="Form"
+          hint={
+            !pageId
+              ? "Choose the Facebook Page on the Campaign step first."
+              : current?.error
+                ? `Couldn't load the Page's forms (${current.error}). Enter the form ID instead.`
+                : current && list.length === 0
+                  ? "This Page has no instant forms yet. Create one in Meta (Page → Publishing tools → Forms library), then enter its ID."
+                  : "Forms come from the ad's Facebook Page."
+          }
+        >
+          {!manual && (
+            <Select
+              value={value}
+              disabled={!current}
+              onChange={(e) => (e.target.value === "__manual" ? setTyping(true) : onChange({ leadFormId: e.target.value }))}
+            >
+              <option value="">{current ? "Choose a form" : "Loading forms…"}</option>
+              {list.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                  {f.active ? "" : " (archived)"}
+                </option>
+              ))}
+              <option value="__manual">Other form (enter ID)…</option>
+            </Select>
           )}
-        </div>
-      ))}
-      {list.length < MAX_TEXTS && (
-        <button type="button" onClick={() => onChange([...list, ""])} className="inline-flex w-fit items-center gap-1 text-[12.5px] font-medium text-primary-ink hover:underline">
-          <Plus className="size-3.5" aria-hidden /> Add {label.toLowerCase()} option
-        </button>
-      )}
-    </fieldset>
+          {manual && <Input value={value} inputMode="numeric" placeholder="Form ID" aria-label="Instant form ID" onChange={(e) => onChange({ leadFormId: e.target.value.replace(/\D/g, "") })} />}
+        </Field>
+        {showCta && (
+          <Field label="Call to action">
+            <Select value={(LEAD_CTAS as readonly string[]).includes(cta) ? cta : LEAD_CTAS[0]} onChange={(e) => onChange({ cta: e.target.value })}>
+              {LEAD_CTAS.map((c) => (
+                <option key={c} value={c}>
+                  {CTA_TEXT[c] ?? c}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
+      </div>
+      <p className="text-[12.5px] text-muted">Instant-form ads use the feed file for every placement and the first primary text and headline.</p>
+    </div>
   );
 }
 
-/** Advantage+ creative enhancements: Meta turns them on by default; each one here is an explicit on/off. */
-function Enhancements({ value, onChange }: { value: CreativeFeature[]; onChange: (v: CreativeFeature[]) => void }) {
-  const [open, setOpen] = useState(false);
-  const on = new Set(value);
-  const toggle = (k: CreativeFeature) => onChange(on.has(k) ? value.filter((x) => x !== k) : [...value, k]);
+function AutomationToggle({ label, body, on, onChange }: { label: string; body: string; on: boolean; onChange: (on: boolean) => void }) {
   return (
-    <Section
-      title="Advantage+ creative enhancements"
-      icon={Sparkles}
-      description={`${on.size} of ${CREATIVE_FEATURES.length} on. Anything off is explicitly opted out, so Meta can't switch it on by default.`}
-      actions={
-        <span className="flex items-center gap-1">
-          <Button size="sm" variant="ghost" onClick={() => onChange([])} disabled={on.size === 0}>
-            All off
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => onChange([...CREATIVE_FEATURES])} disabled={on.size === CREATIVE_FEATURES.length}>
-            All on
-          </Button>
-          <Button size="sm" variant="ghost" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-            {open ? "Hide" : "Show"} <ChevronDown className={cn("transition-transform", open && "rotate-180")} />
-          </Button>
-        </span>
-      }
-    >
-      {open ? (
-        <div className="grid gap-4 sm:grid-cols-2">
-          {CREATIVE_FEATURE_GROUPS.map((g) => (
-            <div key={g.label} className="rounded-lg border border-line">
-              <p className="border-b border-line-soft px-3 py-2 text-[12px] font-medium uppercase tracking-wider text-faint">{g.label}</p>
-              <ul className="divide-y divide-line-soft">
-                {g.features.map((f) => (
-                  <li key={f.key} className="flex items-center justify-between gap-3 px-3 py-2 text-[13px]">
-                    <span>{f.label}</span>
-                    <Switch on={on.has(f.key)} label={f.label} onChange={() => toggle(f.key)} />
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className="flex flex-wrap gap-1.5 text-[12.5px] text-muted">
-          {on.size === 0 ? (
-            "All enhancements are off."
-          ) : (
-            CREATIVE_FEATURE_GROUPS.flatMap((g) => g.features)
-              .filter((f) => on.has(f.key))
-              .map((f) => (
-                <span key={f.key} className="inline-flex items-center gap-1 rounded-md bg-primary-soft px-1.5 py-0.5 text-primary-ink">
-                  <Check className="size-3" aria-hidden /> {f.label}
-                </span>
-              ))
-          )}
-        </p>
-      )}
-    </Section>
+    <div className="flex items-start justify-between gap-4">
+      <div className="min-w-0">
+        <p className="text-[13px] font-medium">{label}</p>
+        <p className="mt-0.5 text-[12.5px] text-muted">{body}</p>
+      </div>
+      <Switch on={on} label={label} onChange={onChange} />
+    </div>
   );
 }

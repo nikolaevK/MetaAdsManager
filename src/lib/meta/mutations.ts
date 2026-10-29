@@ -2,7 +2,7 @@ import "server-only";
 import { inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { ads, adsets, campaigns } from "@/lib/db/schema";
-import { graph, graphAll, graphBatch, type Params } from "./client";
+import { graph, graphAll, graphBatchUpdate, type Params } from "./client";
 import { errorMessage, MetaApiError } from "./errors";
 
 export type Level = "campaign" | "adset" | "ad";
@@ -15,7 +15,7 @@ export async function setStatus(
   status: "ACTIVE" | "PAUSED" | "ARCHIVED",
   adAccountId: string,
 ): Promise<{ updated: string[]; errors: { id: string; message: string }[] }> {
-  const results = await graphBatch(
+  const results = await graphBatchUpdate(
     ids.map((id) => ({ method: "POST" as const, relativeUrl: id, params: { status } })),
     { accountId: adAccountId },
   );

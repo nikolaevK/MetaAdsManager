@@ -1,4 +1,5 @@
 import "server-only";
+import { UserError } from "@/lib/action-result";
 import { graph, graphAll } from "./client";
 
 export type RemoteAdAccount = {
@@ -67,6 +68,42 @@ export async function listPages(adAccountId: string, businessId?: string | null)
     }
   });
   return [...pages.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export type RemoteInstagram = { id: string; username?: string };
+
+/**
+ * Instagram accounts assigned to the ad account in Business Settings. Unlike the Business's own Instagram list
+ * (which needs the app's Full access tier), this works with a system-user token.
+ */
+export function listInstagramAccounts(adAccountId: string): Promise<RemoteInstagram[]> {
+  return graphAll<RemoteInstagram>(`${adAccountId}/instagram_accounts`, { params: { fields: "id,username", limit: 100 }, accountId: adAccountId, maxPages: 5 });
+}
+
+export type RemoteLeadForm = { id: string; name: string; status?: string; locale?: string };
+
+/**
+ * Instant forms on a Page. The edge needs a Page access token, which the system user can get for Pages it was
+ * assigned with the advertise task; it is used for this call only and never stored or sent to the browser.
+ */
+export async function listLeadForms(pageId: string, adAccountId: string): Promise<RemoteLeadForm[]> {
+  const page = await graph<{ access_token?: string }>(pageId, { params: { fields: "access_token" }, accountId: adAccountId });
+  if (!page.access_token) throw new UserError("The system user can't act on this Page. Assign the Page to it in Business Settings (with permission to create ads).");
+  return graphAll<RemoteLeadForm>(`${pageId}/leadgen_forms`, {
+    params: { fields: "id,name,status,locale", limit: 100 },
+    accountId: adAccountId,
+    token: page.access_token,
+    maxPages: 5,
+  });
+}
+
+/** The ad account's default EU (DSA) beneficiary and payer, used when an ad set doesn't name its own. */
+export async function getDsaDefaults(adAccountId: string): Promise<{ beneficiary?: string; payor?: string }> {
+  const a = await graph<{ default_dsa_beneficiary?: string; default_dsa_payor?: string }>(adAccountId, {
+    params: { fields: "default_dsa_beneficiary,default_dsa_payor" },
+    accountId: adAccountId,
+  });
+  return { beneficiary: a.default_dsa_beneficiary || undefined, payor: a.default_dsa_payor || undefined };
 }
 
 export type RemoteApp = { id: string; name: string; object_store_urls?: Record<string, string> };

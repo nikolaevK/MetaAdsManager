@@ -27,7 +27,7 @@ export async function TopBar() {
         <Breadcrumbs />
       </div>
       <div className="flex flex-1 items-center justify-end gap-2 md:flex-none">
-        <CommandTrigger className="w-9 justify-center sm:w-64 sm:justify-start" />
+        <CommandTrigger className="w-9 justify-center sm:w-64 sm:justify-start max-sm:pointer-coarse:w-10" />
         {account && (
           <div className="hidden items-center gap-1 rounded-lg border border-line bg-surface py-0.5 pl-2.5 pr-0.5 shadow-xs lg:flex">
             <span className={cn("size-1.5 rounded-full", stale ? "bg-warning" : "bg-success")} aria-hidden />

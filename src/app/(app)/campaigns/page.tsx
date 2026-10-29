@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { NoAccount } from "@/components/no-account";
-import { Badge, buttonClass, PageHeader, PageSkeleton, Stat } from "@/components/ui";
+import { Alert, Badge, buttonClass, PageHeader, PageSkeleton, Stat } from "@/components/ui";
 import { ParamSelect, SearchInput } from "@/components/url-filters";
 import { hasRole } from "@/lib/auth/session";
 import { pageDateRange } from "@/lib/date-range";
@@ -12,7 +12,18 @@ import { formatSpan, previousPeriod } from "@/lib/dates";
 import { formatNumber } from "@/lib/format";
 import { change, formatMetric, METRIC_BY_KEY, verdict } from "@/lib/metrics";
 import { getColumnPrefs } from "@/lib/preferences";
-import { getParentOptions, getTableRows, isSortKey, sortRows, STATUS_FILTERS, totals, type SortKey, type StatusFilter, type TableLevel } from "@/lib/queries/manage";
+import {
+  getTableRows,
+  getTableTotals,
+  isSortKey,
+  MAX_ROWS,
+  sortRows,
+  STATUS_FILTERS,
+  totals,
+  type SortKey,
+  type StatusFilter,
+  type TableLevel,
+} from "@/lib/queries/manage";
 import { getWorkspace } from "@/lib/workspace";
 import { AdsTable } from "./ads-table";
 
@@ -47,12 +58,12 @@ async function Manage({ searchParams }: { searchParams: PageProps<"/campaigns">[
   const prev = previousPeriod(range);
   const filter = { campaigns: ids("campaigns"), adsets: ids("adsets") };
   const query = { campaignIds: filter.campaigns, adsetIds: filter.adsets, q: str("q"), status: status as StatusFilter };
+  const prevQuery = { ...query, status: status === "spent" ? "all" : query.status };
 
-  const [current, previousRows, columnPrefs, parents] = await Promise.all([
+  const [current, previousRows, columnPrefs] = await Promise.all([
     getTableRows(account.id, level, range, query),
-    getTableRows(account.id, level, { ...prev, preset: "custom" }, { ...query, status: status === "spent" ? "all" : query.status }),
+    getTableRows(account.id, level, { ...prev, preset: "custom" }, prevQuery),
     getColumnPrefs(user.id),
-    getParentOptions(account.id),
   ]);
   const rows = sortRows(current, sortKey, dir);
 
@@ -63,10 +74,17 @@ async function Manage({ searchParams }: { searchParams: PageProps<"/campaigns">[
   }
 
   const canEdit = hasRole(user, "buyer");
-  const sum = totals(rows);
+  const rowSum = totals(rows);
+  // Past MAX_ROWS the table holds only the biggest spenders, so the KPIs are summed in the database instead.
+  const all =
+    current.length >= MAX_ROWS
+      ? await Promise.all([getTableTotals(account.id, level, range, query), getTableTotals(account.id, level, { ...prev, preset: "custom" }, prevQuery)])
+      : null;
+  const sum = all?.[0] ?? rowSum;
   // Compare the same set of objects across both periods.
   const shown = new Set(rows.map((r) => r.id));
-  const prevSum = totals(previousRows.filter((r) => shown.has(r.id)));
+  const prevSum = all?.[1] ?? totals(previousRows.filter((r) => shown.has(r.id)));
+  const count = all?.[0].objects ?? rows.length;
   const labels = new Set(rows.filter((r) => r.results > 0).map((r) => r.resultLabel));
   const [one, many] = NOUN[level];
 
@@ -78,7 +96,7 @@ async function Manage({ searchParams }: { searchParams: PageProps<"/campaigns">[
         actions={
           // The top bar carries the global "New campaign" CTA from sm up.
           canEdit && (
-            <Link href="/launches/new" className={buttonClass("secondary", "md", "sm:hidden")}>
+            <Link href="/launches/new" className={buttonClass("create", "md", "sm:hidden")}>
               <Plus /> New campaign
             </Link>
           )
@@ -98,7 +116,7 @@ async function Manage({ searchParams }: { searchParams: PageProps<"/campaigns">[
             const tone = verdict(m, pct);
             const footer =
               key === "spend"
-                ? `Across ${formatNumber(rows.length)} ${rows.length === 1 ? one : many}`
+                ? `Across ${formatNumber(count)} ${count === 1 ? one : many}`
                 : key === "results"
                   ? labels.size === 1
                     ? [...labels][0]
@@ -120,11 +138,18 @@ async function Manage({ searchParams }: { searchParams: PageProps<"/campaigns">[
           })}
         </ul>
 
+        {all && (
+          <Alert tone="info">
+            The table lists the {formatNumber(rows.length)} biggest spenders of {formatNumber(count)} {many}; the totals above cover all of them. Search or filter to
+            find the rest.
+          </Alert>
+        )}
+
         <AdsTable
           key={`${level}:${filter.campaigns.join()}:${filter.adsets.join()}`}
           level={level}
           rows={rows}
-          totals={sum}
+          totals={rowSum}
           currency={account.currency}
           timeZone={account.timezoneName}
           canEdit={canEdit}
@@ -135,7 +160,6 @@ async function Manage({ searchParams }: { searchParams: PageProps<"/campaigns">[
           range={{ since: range.since, until: range.until }}
           accountId={account.id}
           clientId={client?.id ?? null}
-          parents={parents}
           toolbar={
             <div key="toolbar" className="flex flex-wrap items-center gap-2">
               <div key="search" className="w-full sm:w-72">

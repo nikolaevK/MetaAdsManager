@@ -51,7 +51,7 @@ export function SpendMix({ items, total, currency, dateQuery }: { items: { id: s
               {s.href ? (
                 <Link href={s.href} className={cn(cls, "group hover:bg-hover")}>
                   {body}
-                  <ChevronRight className="size-3.5 shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100" aria-hidden />
+                  <ChevronRight className="size-3.5 shrink-0 text-faint transition-opacity can-hover:opacity-0 can-hover:group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden />
                 </Link>
               ) : (
                 <div className={cn(cls, "pr-7")}>{body}</div>

@@ -460,3 +460,116 @@ describe("job queue", () => {
     (globalThis as { __metaUsage?: Map<string, unknown> }).__metaUsage?.clear();
   });
 });
+
+describe("launches that add to existing campaigns and ad sets", () => {
+  async function retarget(target: Record<string, string>, over: (s: ReturnType<typeof m.spec.normalizeSpec>) => object = () => ({})) {
+    const [old] = await m.db.db().select().from(m.schema.launches).where(m.orm.eq(m.schema.launches.id, launchId));
+    const spec = m.spec.normalizeSpec(old.spec);
+    await m.db.db().update(m.schema.launches).set({ spec: { ...spec, target, ...over(spec) } }).where(m.orm.eq(m.schema.launches.id, launchId));
+  }
+
+  it("adds ads to an existing ad set: nothing else is created, and only the new ads are switched on or deleted", async () => {
+    const campaign = graph.create("campaign", { name: "Live campaign", status: "ACTIVE" });
+    const adset = graph.create("adset", { name: "Live ad set", status: "ACTIVE", campaign_id: campaign.id });
+    await retarget({ mode: "adset", campaignId: campaign.id, adsetId: adset.id }, (s) => ({ adsets: [s.adsets[0]] }));
+    await build();
+
+    expect((await getLaunch()).status).toBe("ready_for_review");
+    expect(graph.byType("campaign").map((c) => c.id)).toEqual([campaign.id]);
+    expect(graph.byType("adset").map((s) => s.id)).toEqual([adset.id]);
+    const ads = graph.byType("ad");
+    expect(ads).toHaveLength(2);
+    expect(ads.every((a) => a.params.adset_id === adset.id && a.status === "PAUSED")).toBe(true);
+
+    await m.db.db().update(m.schema.launches).set({ status: "activating" }).where(m.orm.eq(m.schema.launches.id, launchId));
+    graph.calls = [];
+    await m.pipeline.activateLaunch(launchId);
+    const switched = graph.calls.filter((c) => c.params.status === "ACTIVE").map((c) => c.path);
+    expect(switched.sort()).toEqual(ads.map((a) => a.id).sort());
+    expect((await getLaunch()).status).toBe("active");
+
+    // Discarding later removes only what the launch created.
+    await m.db.db().update(m.schema.launches).set({ status: "rolling_back" }).where(m.orm.eq(m.schema.launches.id, launchId));
+    await m.pipeline.rollbackLaunch(launchId, "discarded");
+    expect(graph.byType("ad")).toHaveLength(0);
+    expect(graph.objects.has(campaign.id) && graph.objects.has(adset.id)).toBe(true);
+  });
+
+  it("adds ad sets (with their ads) to an existing campaign without creating a new one", async () => {
+    const campaign = graph.create("campaign", { name: "Live campaign", status: "ACTIVE" });
+    await retarget({ mode: "campaign", campaignId: campaign.id }, (s) => ({
+      campaign: { ...s.campaign, budgetLevel: "adset" },
+      adsets: s.adsets.map((a) => ({ ...a, budget: 25 })),
+    }));
+    await build();
+
+    expect(graph.byType("campaign").map((c) => c.id)).toEqual([campaign.id]);
+    const adsets = graph.byType("adset");
+    expect(adsets).toHaveLength(2);
+    expect(adsets.every((s) => s.params.campaign_id === campaign.id && s.params.daily_budget === "2500")).toBe(true);
+    expect(graph.byType("ad")).toHaveLength(4);
+
+    await m.db.db().update(m.schema.launches).set({ status: "activating" }).where(m.orm.eq(m.schema.launches.id, launchId));
+    graph.calls = [];
+    await m.pipeline.activateLaunch(launchId);
+    expect(graph.calls.some((c) => c.path === campaign.id)).toBe(false);
+  });
+});
+
+describe("approval lock", () => {
+  it("blocks edits to a pending launch's objects and to anything inside them, and lifts once approved", async () => {
+    const ownership = await import("@/lib/queries/ownership");
+    await build();
+    const campaignId = graph.byType("campaign")[0].id;
+    const adsetId = graph.byType("adset")[0].id;
+    // An ad someone created inside the launch's ad set outside the launch (e.g. a duplicate): not in the ledger.
+    const outsider = "999000111";
+    await m.db.db().insert(m.schema.campaigns).values({ id: campaignId, adAccountId: "act_1", name: "c", status: "PAUSED", effectiveStatus: "PAUSED", syncedAt: Date.now() }).onConflictDoNothing();
+    await m.db.db().insert(m.schema.adsets).values({ id: adsetId, adAccountId: "act_1", campaignId, name: "s", status: "PAUSED", effectiveStatus: "PAUSED", syncedAt: Date.now() }).onConflictDoNothing();
+    await m.db.db().insert(m.schema.ads).values({ id: outsider, adAccountId: "act_1", campaignId, adsetId, name: "a", status: "PAUSED", effectiveStatus: "PAUSED", syncedAt: Date.now() }).onConflictDoNothing();
+
+    await expect(ownership.assertNotAwaitingApproval("campaign", [campaignId])).rejects.toThrow(/waiting for approval/);
+    await expect(ownership.assertNotAwaitingApproval("ad", [outsider])).rejects.toThrow(/waiting for approval/);
+
+    await m.db.db().update(m.schema.launches).set({ status: "active" }).where(m.orm.eq(m.schema.launches.id, launchId));
+    await expect(ownership.assertNotAwaitingApproval("ad", [outsider])).resolves.toBeUndefined();
+  });
+});
+
+describe("sign-in throttle", () => {
+  it("counts attempts atomically, so a burst of parallel guesses can't all get through", async () => {
+    const { reserveAttempt } = await import("@/lib/auth/throttle");
+    const key = `email:burst-${crypto.randomUUID()}@example.com`;
+    const waits = await Promise.all(Array.from({ length: 12 }, () => reserveAttempt([{ key, max: 5 }])));
+    expect(waits.filter((w) => w === 0)).toHaveLength(5);
+    expect(await reserveAttempt([{ key, max: 5 }])).toBeGreaterThan(0);
+  });
+});
+
+describe("campaigns table totals", () => {
+  it("sums every matching object in the database and counts only spenders for “had spend”", async () => {
+    const { getTableTotals } = await import("@/lib/queries/manage");
+    const { db, schema } = m;
+    await db.db().insert(schema.adAccounts).values({ id: "act_tot", clientId: CLIENT, name: "Totals", currency: "USD", timezoneName: "UTC" });
+    const now = Date.now();
+    const camp = (id: string, name: string, status = "ACTIVE") => ({ id, adAccountId: "act_tot", name, status, effectiveStatus: status, syncedAt: now });
+    await db.db().insert(schema.campaigns).values([camp("t1", "Alpha"), camp("t2", "Beta"), camp("t3", "Gamma", "PAUSED")]);
+    const day = (adId: string, campaignId: string, date: string, spend: number, impressions: number) => ({
+      adId, date, adAccountId: "act_tot", campaignId, adsetId: `${campaignId}-s`, spend, impressions, syncedAt: now,
+    });
+    await db.db().insert(schema.insightsDaily).values([
+      day("ta1", "t1", "2026-10-01", 10, 1000),
+      day("ta1", "t1", "2026-10-02", 5, 500),
+      day("ta2", "t2", "2026-10-01", 0, 40),
+      day("ta1", "t1", "2026-09-01", 99, 9999), // outside the range
+    ]);
+    const range = { since: "2026-10-01", until: "2026-10-31", preset: "custom" as const };
+
+    const all = await getTableTotals("act_tot", "campaigns", range, {});
+    expect(all).toMatchObject({ spend: 15, impressions: 1540, objects: 3 });
+    expect(await getTableTotals("act_tot", "campaigns", range, { status: "spent" })).toMatchObject({ spend: 15, objects: 1 });
+    expect(await getTableTotals("act_tot", "campaigns", range, { status: "off" })).toMatchObject({ spend: 0, objects: 1 });
+    expect(await getTableTotals("act_tot", "campaigns", range, { q: "BET" })).toMatchObject({ spend: 0, impressions: 40, objects: 1 });
+    expect(await getTableTotals("act_tot", "campaigns", range, { campaignIds: ["t1"] })).toMatchObject({ spend: 15, objects: 1 });
+  });
+});

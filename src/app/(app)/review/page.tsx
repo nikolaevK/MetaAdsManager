@@ -114,7 +114,7 @@ async function Review({ searchParams }: { searchParams: PageProps<"/review">["se
                     <div className="flex min-w-0 flex-1 gap-4">
                       <Thumb url={e.thumbnailUrl} />
                       <div className="min-w-0 flex-1">
-                        <Link href={adsHref(e.adName)} className="block truncate text-[14px] font-semibold tracking-tight text-ink transition-colors hover:text-primary" title={e.adName}>
+                        <Link href={adsHref(e.adName)} className="block truncate text-[14px] font-semibold tracking-tight text-ink transition-colors hover:text-primary-ink" title={e.adName}>
                           {e.adName}
                         </Link>
                         <p className="mt-0.5 truncate text-xs text-muted">
@@ -173,7 +173,7 @@ async function Review({ searchParams }: { searchParams: PageProps<"/review">["se
                         <td className="max-w-xs px-5 py-2.5">
                           <div className="flex min-w-0 items-center gap-3">
                             <Thumb url={a.thumbnailUrl} small />
-                            <Link href={adsHref(a.name)} className="truncate font-medium text-ink transition-colors hover:text-primary" title={a.name}>
+                            <Link href={adsHref(a.name)} className="truncate font-medium text-ink transition-colors hover:text-primary-ink" title={a.name}>
                               {a.name}
                             </Link>
                           </div>
@@ -269,7 +269,7 @@ function Reasons({ reasons }: { reasons: Reason[] }) {
   return (
     <dl className="divide-y divide-line-soft border-t border-line-soft bg-surface-2 text-[13px]">
       {reasons.map((r, i) => (
-        <div key={i} className="grid gap-1 py-2.5 pl-5 pr-4 sm:grid-cols-[10rem_minmax(0,1fr)] sm:gap-4 sm:pr-5">
+        <div key={i} className="grid grid-cols-1 gap-1 py-2.5 pl-5 pr-4 sm:grid-cols-[10rem_minmax(0,1fr)] sm:gap-4 sm:pr-5">
           <dt className="text-[11px] font-medium uppercase tracking-wider text-faint sm:pt-0.5">{r.scope}</dt>
           <dd className="min-w-0">
             <p className="font-medium capitalize">{r.title}</p>

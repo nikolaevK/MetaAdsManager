@@ -16,14 +16,18 @@ Never use raw hex values or Tailwind palette colors (`bg-white`, `text-gray-500`
 | Hover / subtle fill | `bg-hover` |
 | Borders | `border-line` (structure), `border-line-soft` (row dividers, inner separators) |
 | Text | `text-ink` (primary), `text-muted` (secondary), `text-faint` (tertiary, labels, icons) |
-| Brand | `bg-primary`, `text-primary`, `bg-primary-soft` + `text-primary-ink` for tinted chips, gradient `from-brand-from to-brand-to` |
+| Brand | `bg-primary`, `text-primary`, `bg-primary-soft` + `text-primary-ink` for tinted chips, gradient `from-brand-from to-brand-to`; text/icons on primary, brand or danger fills use `text-on-primary` |
 | Status | `success`, `warning`, `danger` each with `-soft` (background) and `-ink` (text on soft) |
 | Charts | `var(--chart-1)` (spend / primary series), `var(--chart-2)` (results), `var(--chart-3)`, gridlines `var(--chart-grid)`, axis labels `var(--faint)` |
 | Elevation | `shadow-xs` (inputs, buttons), `shadow-card` (cards), `shadow-pop` (menus, dialogs, toasts), `shadow-glow` (brand CTA) |
-| Focus | `focus-visible:ring-4 focus-visible:ring-[var(--ring)]` |
+| Focus | `focusRing` from ui.tsx (`focus-visible:ring-4 focus-visible:ring-[var(--ring)]`) on every custom control |
 
 Opacity modifiers work on tokens (`bg-primary/10`, `ring-danger/20`). Dark mode is automatic through tokens;
-only use the `dark:` variant for rare true exceptions.
+only use the `dark:` variant for rare true exceptions. `text-faint` still meets 4.5:1 on canvas, surface, surface-2 and
+hover in both themes, so it's fine for captions and timestamps.
+
+Exception: the login page's hero panel is always dark (in both themes) and uses fixed colors (`bg-[#0b0b14]`,
+`text-white/…`, light indigo/violet tints). Don't copy that pattern elsewhere.
 
 ## Type & spacing
 
@@ -46,11 +50,15 @@ description, actions })` · `EmptyState({ icon, title, action })` · `Skeleton`,
 pill tabs.
 Shell (sidebar, top bar with breadcrumbs, ⌘K palette, theme switch) lives in `src/components/shell/*`.
 `toast(message, tone)` from `src/components/toast.tsx`.
+Overlays: `Modal` / `useModal` from `src/components/modal.tsx` (focus in, Tab kept inside, Escape, scroll lock, focus
+back to the trigger) and `useConfirm()` from `src/components/confirm-dialog.tsx` instead of `window.confirm`.
+Settings forms end with `FormFooter` from `src/components/settings-ui.tsx` (destructive action left, primary right,
+persistent error Alert, `sticky` on long forms).
 
 ## Patterns
 
 - **Page**: `PageHeader` → optional KPI strip (`Stat` grid, `grid-cols-2 lg:grid-cols-4/5`) → toolbar → content cards.
-  The top bar already shows breadcrumbs and the global "New launch" CTA.
+  The top bar already shows breadcrumbs and the global "New campaign" CTA (the one `create` button on a screen).
 - **Toolbar**: a single row (wraps on mobile) of search, filters (`Segmented` for 2–4 options, `Select` otherwise),
   and right-aligned date range / view actions.
 - **Tables**: inside a `Card` with `overflow-hidden`; wrapper `overflow-x-auto`; header row `bg-surface-2`,
@@ -65,5 +73,8 @@ Shell (sidebar, top bar with breadcrumbs, ⌘K palette, theme switch) lives in `
   `bg-black/40 backdrop-blur-[2px]`.
 - **Motion**: subtle only — `transition-colors`, `animate-pop-in` for overlays. Respect reduced motion (global).
 - **Responsive**: must work at 390px wide with no horizontal page scroll; wide tables scroll inside their card.
+- **Touch**: `hover:` never fires on touch screens. Hover-only reveals use `can-hover:opacity-0 can-hover:group-hover:opacity-100`
+  (always visible on touch); small controls grow to a 40px target with `pointer-coarse:` (size, or an `after:` hit area).
+  Keyboard hints (`Kbd`) hide with `pointer-coarse:hidden`; don't auto-focus text fields on touch (it pops the keyboard).
 - **Charts**: SVG with token colors via CSS variables (`fill="var(--chart-1)"`), gridlines `var(--chart-grid)`,
   labels `var(--faint)`; rounded bar tops; hover tooltips styled like popovers.

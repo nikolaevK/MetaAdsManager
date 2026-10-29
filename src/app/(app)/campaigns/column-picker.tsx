@@ -2,7 +2,8 @@
 
 import { ArrowDown, ArrowUp, Check, ChevronDown, Columns3, GripVertical, Plus, RotateCcw, Search, Trash2, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Button, cn } from "@/components/ui";
+import { Modal } from "@/components/modal";
+import { Button, cn, focusRing, Input } from "@/components/ui";
 import { COLUMN_BY_KEY, COLUMN_GROUPS, COLUMNS, DEFAULT_PRESET, PRESETS, type TableLevelKey } from "@/lib/columns";
 import type { ColumnPrefs } from "@/lib/preferences";
 
@@ -19,6 +20,7 @@ export function ColumnPicker({ prefs, level, onChange }: Props) {
   const [menu, setMenu] = useState(false);
   const [dialog, setDialog] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!menu) return;
@@ -31,21 +33,29 @@ export function ColumnPicker({ prefs, level, onChange }: Props) {
       document.removeEventListener("keydown", onKey);
     };
   }, [menu]);
-  useLayoutEffect(() => () => setMenu(false), []);
+  // Cache Components keeps hidden pages mounted: close the menu and the (portalled) dialog when this page is hidden.
+  useLayoutEffect(
+    () => () => {
+      setMenu(false);
+      setDialog(false);
+    },
+    [],
+  );
 
   const activeName =
     PRESETS.find((p) => same(p.columns, prefs.columns))?.name ?? prefs.sets.find((s) => same(s.columns, prefs.columns))?.name ?? "Custom";
 
-  const item = "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] transition-colors hover:bg-hover";
+  const item = cn("flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] transition-colors hover:bg-hover pointer-coarse:py-2.5", focusRing);
 
   return (
     <div ref={ref} className="relative">
       <button
+        ref={trigger}
         type="button"
         aria-haspopup="menu"
         aria-expanded={menu}
         onClick={() => setMenu((m) => !m)}
-        className="flex h-9 items-center gap-2 rounded-lg border border-line bg-surface px-3 text-[13px] shadow-xs transition-colors hover:bg-hover"
+        className={cn("flex h-9 items-center gap-2 rounded-lg border border-line bg-surface px-3 text-[13px] shadow-xs transition-colors hover:bg-hover", focusRing)}
       >
         <Columns3 className="size-4 text-faint" aria-hidden />
         <span className="max-sm:sr-only">Columns:</span>
@@ -80,7 +90,11 @@ export function ColumnPicker({ prefs, level, onChange }: Props) {
                     aria-label={`Delete column set ${s.name}`}
                     title="Delete set"
                     onClick={() => onChange({ ...prefs, sets: prefs.sets.filter((x) => x.id !== s.id) })}
-                    className="grid size-7 shrink-0 place-items-center rounded-md text-faint opacity-0 transition hover:bg-danger-soft hover:text-danger-ink focus-visible:opacity-100 group-hover/set:opacity-100"
+                    className={cn(
+                      "grid size-7 shrink-0 place-items-center rounded-md text-faint transition hover:bg-danger-soft hover:text-danger-ink pointer-coarse:size-10",
+                      "can-hover:opacity-0 can-hover:group-hover/set:opacity-100 focus-visible:opacity-100",
+                      focusRing,
+                    )}
                   >
                     <Trash2 className="size-3.5" />
                   </button>
@@ -89,7 +103,8 @@ export function ColumnPicker({ prefs, level, onChange }: Props) {
             </>
           )}
           <div className="my-1 h-px bg-line-soft" />
-          <button type="button" role="menuitem" className={cn(item, "font-medium text-primary-ink")} onClick={() => (setDialog(true), setMenu(false))}>
+          {/* Focus the trigger first: the menu item unmounts, and the dialog hands focus back to whatever had it. */}
+          <button type="button" role="menuitem" className={cn(item, "font-medium text-primary-ink")} onClick={() => (trigger.current?.focus(), setDialog(true), setMenu(false))}>
             <Plus className="size-4" aria-hidden /> Customize columns…
           </button>
         </div>
@@ -104,12 +119,7 @@ function CustomizeDialog({ prefs, level, onClose, onApply }: { prefs: ColumnPref
   const [q, setQ] = useState("");
   const [setName, setSetName] = useState("");
   const [dragging, setDragging] = useState<string | null>(null);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const search = useRef<HTMLInputElement>(null);
 
   const query = q.trim().toLowerCase();
   const visible = COLUMNS.filter((c) => !query || c.label.toLowerCase().includes(query) || c.description.toLowerCase().includes(query));
@@ -137,130 +147,128 @@ function CustomizeDialog({ prefs, level, onClose, onApply }: { prefs: ColumnPref
   };
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-3 backdrop-blur-[2px]" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div role="dialog" aria-modal="true" aria-labelledby="columns-title" className="flex max-h-[min(44rem,calc(100dvh-1.5rem))] w-full max-w-3xl animate-pop-in flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-pop">
-        <div className="flex items-start justify-between gap-3 border-b border-line-soft px-5 py-4">
-          <div>
-            <h2 id="columns-title" className="text-[15px] font-semibold tracking-tight">
-              Customize columns
-            </h2>
-            <p className="mt-0.5 text-[13px] text-muted">Pick metrics, drag to reorder, and save the layout as a set you can switch to any time.</p>
-          </div>
-          <button type="button" aria-label="Close" onClick={onClose} className="grid size-8 place-items-center rounded-lg text-faint hover:bg-hover hover:text-ink">
-            <X className="size-4" />
-          </button>
+    <Modal
+      onClose={onClose}
+      initialFocus={search}
+      aria-labelledby="columns-title"
+      className="flex max-h-[min(44rem,calc(100dvh-1.5rem))] w-full max-w-3xl animate-pop-in flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-pop"
+    >
+      <div className="flex items-start justify-between gap-3 border-b border-line-soft px-5 py-4">
+        <div>
+          <h2 id="columns-title" className="text-[15px] font-semibold tracking-tight">
+            Customize columns
+          </h2>
+          <p className="mt-0.5 text-[13px] text-muted">Pick metrics, drag to reorder, and save the layout as a set you can switch to any time.</p>
         </div>
+        <button type="button" aria-label="Close" onClick={onClose} className={cn("grid size-8 shrink-0 place-items-center rounded-lg text-faint hover:bg-hover hover:text-ink pointer-coarse:size-10", focusRing)}>
+          <X className="size-4" />
+        </button>
+      </div>
 
-        <div className="grid min-h-0 flex-1 sm:grid-cols-[1fr_17rem]">
-          <div className="flex min-h-0 flex-col border-line-soft max-sm:max-h-[45dvh] sm:border-r">
-            <div className="relative border-b border-line-soft p-3">
-              <Search className="pointer-events-none absolute left-5.5 top-5.5 size-4 text-faint" aria-hidden />
-              <input
-                autoFocus
-                type="search"
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="Search metrics"
-                aria-label="Search metrics"
-                className="h-9 w-full rounded-lg border border-line bg-surface pl-8 pr-2 text-[13px] focus:border-primary focus:outline-none focus:ring-4 focus:ring-[var(--ring)]"
-              />
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
-              {COLUMN_GROUPS.map((g) => {
-                const list = visible.filter((c) => c.group === g);
-                if (!list.length) return null;
-                return (
-                  <fieldset key={g} className="mb-4 last:mb-0">
-                    <legend className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-faint">{g}</legend>
-                    <div className="grid gap-0.5 sm:grid-cols-2">
-                      {list.map((c) => {
-                        const on = selected.includes(c.key);
-                        const na = c.levels && !c.levels.includes(level);
-                        return (
-                          <label key={c.key} title={c.description} className={cn("flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 text-[13px] transition-colors hover:bg-hover", on && "bg-primary-soft/50")}>
-                            <input type="checkbox" checked={on} onChange={() => toggle(c.key)} className="mt-0.5 size-4 shrink-0 cursor-pointer accent-primary" />
-                            <span className="min-w-0">
-                              <span className="block leading-tight">{c.label}</span>
-                              {na && <span className="block text-[11.5px] text-faint">Not shown at this level</span>}
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </fieldset>
-                );
-              })}
-              {visible.length === 0 && <p className="py-8 text-center text-[13px] text-muted">No metrics match “{q}”.</p>}
-            </div>
+      <div className="grid grid-cols-1 min-h-0 flex-1 sm:grid-cols-[1fr_17rem]">
+        <div className="flex min-h-0 flex-col border-line-soft max-sm:max-h-[45dvh] sm:border-r">
+          <div className="relative border-b border-line-soft p-3">
+            <Search className="pointer-events-none absolute left-5.5 top-5.5 size-4 text-faint" aria-hidden />
+            <Input ref={search} type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search metrics" aria-label="Search metrics" className="pl-8 pr-2" />
           </div>
-
-          <div className="flex min-h-0 flex-col bg-surface-2/60 max-sm:border-t max-sm:border-line-soft">
-            <p className="flex items-center justify-between px-4 pb-2 pt-3 text-[12px] font-medium text-muted">
-              <span>{selected.length} columns selected</span>
-              <button type="button" onClick={() => setSelected(DEFAULT_PRESET.columns)} className="inline-flex items-center gap-1 text-faint hover:text-ink">
-                <RotateCcw className="size-3.5" aria-hidden /> Reset
-              </button>
-            </p>
-            <ol className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-              {selected.map((key, i) => {
-                const c = COLUMN_BY_KEY.get(key);
-                if (!c) return null;
-                return (
-                  <li
-                    key={key}
-                    draggable
-                    onDragStart={(e) => {
-                      setDragging(key);
-                      e.dataTransfer.effectAllowed = "move";
-                    }}
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      dropOn(key);
-                    }}
-                    onDragEnd={() => setDragging(null)}
-                    className={cn(
-                      "group/col flex items-center gap-1.5 rounded-lg border border-transparent bg-surface px-1.5 py-1 text-[13px] shadow-xs",
-                      "mb-1 cursor-grab active:cursor-grabbing",
-                      dragging === key && "border-primary/40 opacity-60",
-                    )}
-                  >
-                    <GripVertical className="size-4 shrink-0 text-faint" aria-hidden />
-                    <span className="min-w-0 flex-1 truncate">{c.label}</span>
-                    <button type="button" aria-label={`Move ${c.label} up`} disabled={i === 0} onClick={() => move(key, -1)} className="grid size-6 place-items-center rounded text-faint hover:bg-hover hover:text-ink disabled:opacity-30">
-                      <ArrowUp className="size-3.5" />
-                    </button>
-                    <button type="button" aria-label={`Move ${c.label} down`} disabled={i === selected.length - 1} onClick={() => move(key, 1)} className="grid size-6 place-items-center rounded text-faint hover:bg-hover hover:text-ink disabled:opacity-30">
-                      <ArrowDown className="size-3.5" />
-                    </button>
-                    <button type="button" aria-label={`Remove ${c.label}`} onClick={() => toggle(key)} className="grid size-6 place-items-center rounded text-faint hover:bg-danger-soft hover:text-danger-ink">
-                      <X className="size-3.5" />
-                    </button>
-                  </li>
-                );
-              })}
-            </ol>
+          <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            {COLUMN_GROUPS.map((g) => {
+              const list = visible.filter((c) => c.group === g);
+              if (!list.length) return null;
+              return (
+                <fieldset key={g} className="mb-4 last:mb-0">
+                  <legend className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-faint">{g}</legend>
+                  <div className="grid grid-cols-1 gap-0.5 sm:grid-cols-2">
+                    {list.map((c) => {
+                      const on = selected.includes(c.key);
+                      const na = c.levels && !c.levels.includes(level);
+                      return (
+                        <label key={c.key} title={c.description} className={cn("flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 text-[13px] transition-colors hover:bg-hover pointer-coarse:py-2.5", on && "bg-primary-soft/50")}>
+                          <input type="checkbox" checked={on} onChange={() => toggle(c.key)} className="mt-0.5 size-4 shrink-0 cursor-pointer accent-primary" />
+                          <span className="min-w-0">
+                            <span className="block leading-tight">{c.label}</span>
+                            {na && <span className="block text-[11.5px] text-faint">Not shown at this level</span>}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </fieldset>
+              );
+            })}
+            {visible.length === 0 && <p className="py-8 text-center text-[13px] text-muted">No metrics match “{q}”.</p>}
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 border-t border-line-soft px-5 py-3">
-          <input
-            value={setName}
-            onChange={(e) => setSetName(e.target.value)}
-            maxLength={60}
-            placeholder="Name this set to save it (optional)"
-            aria-label="Column set name"
-            className="h-9 min-w-0 flex-1 rounded-lg border border-line bg-surface px-3 text-[13px] focus:border-primary focus:outline-none focus:ring-4 focus:ring-[var(--ring)] sm:max-w-72"
-          />
-          <div className="ml-auto flex gap-2">
-            <Button variant="ghost" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button variant="primary" disabled={selected.length === 0} onClick={() => apply(true)}>
-              {setName.trim() ? "Save set & apply" : "Apply"}
-            </Button>
-          </div>
+        <div className="flex min-h-0 flex-col bg-surface-2/60 max-sm:border-t max-sm:border-line-soft">
+          <p className="flex items-center justify-between px-4 pb-2 pt-3 text-[12px] font-medium text-muted">
+            <span>{selected.length} columns selected</span>
+            <button type="button" onClick={() => setSelected(DEFAULT_PRESET.columns)} className={cn("inline-flex items-center gap-1 rounded-md text-faint hover:text-ink pointer-coarse:-my-2 pointer-coarse:py-2", focusRing)}>
+              <RotateCcw className="size-3.5" aria-hidden /> Reset
+            </button>
+          </p>
+          <ol className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+            {selected.map((key, i) => {
+              const c = COLUMN_BY_KEY.get(key);
+              if (!c) return null;
+              return (
+                <li
+                  key={key}
+                  draggable
+                  onDragStart={(e) => {
+                    setDragging(key);
+                    e.dataTransfer.effectAllowed = "move";
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    dropOn(key);
+                  }}
+                  onDragEnd={() => setDragging(null)}
+                  className={cn(
+                    "group/col flex items-center gap-1.5 rounded-lg border border-transparent bg-surface px-1.5 py-1 text-[13px] shadow-xs",
+                    "mb-1 cursor-grab active:cursor-grabbing",
+                    dragging === key && "border-primary/40 opacity-60",
+                  )}
+                >
+                  <GripVertical className="size-4 shrink-0 text-faint" aria-hidden />
+                  <span className="min-w-0 flex-1 truncate">{c.label}</span>
+                  <button type="button" aria-label={`Move ${c.label} up`} disabled={i === 0} onClick={() => move(key, -1)} className={cn(rowButton, "hover:bg-hover hover:text-ink")}>
+                    <ArrowUp className="size-3.5" />
+                  </button>
+                  <button type="button" aria-label={`Move ${c.label} down`} disabled={i === selected.length - 1} onClick={() => move(key, 1)} className={cn(rowButton, "hover:bg-hover hover:text-ink")}>
+                    <ArrowDown className="size-3.5" />
+                  </button>
+                  <button type="button" aria-label={`Remove ${c.label}`} onClick={() => toggle(key)} className={cn(rowButton, "hover:bg-danger-soft hover:text-danger-ink")}>
+                    <X className="size-3.5" />
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
         </div>
       </div>
-    </div>
+
+      <div className="flex flex-wrap items-center gap-2 border-t border-line-soft px-5 py-3">
+        <Input
+          value={setName}
+          onChange={(e) => setSetName(e.target.value)}
+          maxLength={60}
+          placeholder="Name this set to save it (optional)"
+          aria-label="Column set name"
+          className="min-w-0 flex-1 sm:max-w-72"
+        />
+        <div className="ml-auto flex gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" disabled={selected.length === 0} onClick={() => apply(true)}>
+            {setName.trim() ? "Save set & apply" : "Apply"}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
+
+/** Up / down / remove buttons in the selected-columns list; tap-sized on touch screens. */
+const rowButton = cn("grid size-6 shrink-0 place-items-center rounded text-faint disabled:opacity-30 pointer-coarse:size-10", focusRing);

@@ -26,8 +26,11 @@ export const audienceSchema = z
     customAudiences: z.array(audienceRef).max(100),
     excludedCustomAudiences: z.array(audienceRef).max(100),
     advantageAudience: z.boolean(),
+    advantageDetailed: z.boolean().optional(),
   })
-  .refine((a) => a.ageMin <= a.ageMax, { message: "Max age must be at least the min age", path: ["ageMax"] })
+  .refine((a) => a.advantageAudience || a.ageMin <= a.ageMax, { message: "Max age must be at least the min age", path: ["ageMax"] })
+  // Meta: with Advantage+ audience only a minimum age of 18-25 can be a hard limit.
+  .refine((a) => !a.advantageAudience || a.ageMin <= 25, { message: "With Advantage+ audience the minimum age can be at most 25", path: ["ageMin"] })
   .refine((a) => a.locations.length > 0, { message: "Add at least one location", path: ["locations"] });
 
 export const placementsSchema = z.object({

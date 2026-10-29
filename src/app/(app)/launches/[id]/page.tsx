@@ -52,11 +52,12 @@ type Ledger = NonNullable<Awaited<ReturnType<typeof getLaunchDetail>>>["ledger"]
 function pipelineStates(status: LaunchStatus, spec: LaunchSpec, ledger: Ledger): StepState[] {
   const made = (kind: string) => ledger.filter((r) => r.kind === kind && (r.status === "created" || r.status === "deleted")).length;
   const built = ["ready_for_review", "activating", "active", "activation_failed"].includes(status);
+  // Parents that already existed count as done: the launch only adds to them.
   const done = [
     built || ledger.length > 0,
     built || made("creative") >= spec.ads.length * creativeGroups(spec, DEFAULT_PLACEMENTS).count,
-    built || made("campaign") >= 1,
-    built || made("adset") >= spec.adsets.length,
+    built || spec.target.mode !== "new" || made("campaign") >= 1,
+    built || spec.target.mode === "adset" || made("adset") >= spec.adsets.length,
     built || made("ad") >= spec.adsets.length * spec.ads.length,
     ["activating", "active", "activation_failed"].includes(status),
     status === "active",
@@ -101,8 +102,6 @@ async function LaunchDetail({ params }: { params: PageProps<"/launches/[id]">["p
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-5">
-      <AutoRefresh active={inFlight} />
-
       <Link href="/launches" className="inline-flex w-fit items-center gap-1.5 text-[13px] text-muted transition-colors hover:text-ink">
         <ArrowLeft className="size-3.5" /> Launches
       </Link>
@@ -115,11 +114,7 @@ async function LaunchDetail({ params }: { params: PageProps<"/launches/[id]">["p
               <Badge tone={s.tone} dot>
                 {s.label}
               </Badge>
-              {inFlight && (
-                <span className="inline-flex items-center gap-1.5 text-xs text-faint">
-                  <LoaderCircle className="size-3 animate-spin" aria-hidden /> Updating automatically
-                </span>
-              )}
+              <AutoRefresh active={inFlight} />
             </div>
             <h1 className="mt-2.5 break-words text-[22px] font-semibold leading-tight tracking-tight sm:text-2xl">{launch.name}</h1>
             <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px] text-muted">
@@ -196,7 +191,7 @@ async function LaunchDetail({ params }: { params: PageProps<"/launches/[id]">["p
         </div>
       </Card>
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
         <div className="flex min-w-0 flex-col gap-5">
           {/* Ads */}
           <Card>
@@ -275,7 +270,11 @@ async function LaunchDetail({ params }: { params: PageProps<"/launches/[id]">["p
 
           {/* Ad sets */}
           <Card className="overflow-hidden">
-            <CardHeader icon={Layers} title={<Count label="Ad sets" n={spec.adsets.length} />} description="Targeting and budget for each ad set." />
+            <CardHeader
+              icon={Layers}
+              title={<Count label={spec.target.mode === "adset" ? "Existing ad set" : spec.target.mode === "campaign" ? "New ad sets" : "Ad sets"} n={spec.adsets.length} />}
+              description={spec.target.mode === "adset" ? "The new ads go into this ad set, as it is in Meta." : "Targeting and budget for each ad set."}
+            />
             <div className="overflow-x-auto">
               <table className="w-full text-[13px]">
                 <thead>
@@ -389,6 +388,12 @@ async function LaunchDetail({ params }: { params: PageProps<"/launches/[id]">["p
               description={detail.templateName ? `Started from “${detail.templateName}”` : "As submitted"}
             />
             <dl className="divide-y divide-line-soft px-5 py-1 text-[13px]">
+              {spec.target.mode !== "new" && (
+                <Term label="Adds to">
+                  {spec.target.mode === "campaign" ? "Campaign" : "Ad set"} “{spec.target.mode === "campaign" ? c.name : spec.adsets[0]?.name}”
+                  <span className="block text-muted">Existing; its settings aren&apos;t changed</span>
+                </Term>
+              )}
               <Term label="Objective">{label(OBJECTIVE_LABELS, c.objective)}</Term>
               <Term label="Budget">
                 {c.budgetLevel === "campaign" ? (

@@ -1,17 +1,19 @@
 "use client";
 
-import { Crosshair, Globe, Layers, MessageCircle, MousePointerClick, Smartphone, Target, Wallet, type LucideIcon } from "lucide-react";
-import { useEffect, useState } from "react";
-import { lookupApps, lookupPixels, type AppOption } from "@/app/(app)/lookups";
+import { ClipboardList, Crosshair, Globe, Landmark, Layers, MessageCircle, MousePointerClick, Smartphone, Target, Wallet, type LucideIcon } from "lucide-react";
+import { useEffect, useId, useState } from "react";
+import { lookupApps, lookupDsaDefaults, lookupPixels, type AppOption } from "@/app/(app)/lookups";
 import { AudienceEditor, PlacementsEditor } from "@/app/(app)/campaigns/editor/audience";
 import { ConversionEventSelect } from "@/app/(app)/campaigns/editor/conversion-event";
 import { MoneyInput, Section } from "@/app/(app)/campaigns/editor/fields";
 import { Alert, cn, Field, Input, Select } from "@/components/ui";
-import { MAX_ADSETS, resolveAdset, type AdsetDraft, type BuilderState } from "@/lib/launch/draft";
+import { MAX_ADSETS, resolveAdset, type AdsetDraft, type BuilderState, type ParentView } from "@/lib/launch/draft";
 import { DESTINATION_LABELS, goalsFor, isConversionGoal, MESSAGING_APP_LABELS, MESSAGING_APPS, type Destination, type MessagingApp } from "@/lib/launch/objectives";
+import { reachesEu } from "@/lib/launch/spec";
 import { needsBidAmount } from "@/lib/meta/editor-types";
 import { OPTIMIZATION_LABELS } from "@/lib/meta/labels";
 import { NameField } from "./campaign-step";
+import { ExistingAdsetCard } from "./parent-cards";
 import { ItemTabs } from "./parts";
 
 const DESTINATION_CARDS: Record<Destination, { icon: LucideIcon; body: string }> = {
@@ -19,6 +21,7 @@ const DESTINATION_CARDS: Record<Destination, { icon: LucideIcon; body: string }>
   messaging: { icon: MessageCircle, body: "Start chats in Messenger, Instagram or WhatsApp." },
   app: { icon: Smartphone, body: "Send people to the app store to install your app." },
   on_ad: { icon: MousePointerClick, body: "Video views, post engagement or reach on the ad itself." },
+  instant_form: { icon: ClipboardList, body: "Collect leads with a form that opens right on Facebook or Instagram." },
 };
 
 const ATTRIBUTION = [
@@ -31,7 +34,44 @@ const ATTRIBUTION = [
 
 const GOAL_LABELS: Record<string, string> = { ...OPTIMIZATION_LABELS, TWO_SECOND_CONTINUOUS_VIDEO_VIEWS: "2-second continuous video views" };
 
-export function AdsetStep({
+/** EU Digital Services Act: ads reaching the EU must say who benefits and who pays. Prefilled from the ad account's defaults. */
+function DsaFields({ accountId, adset, onChange }: { accountId: string; adset: AdsetDraft; onChange: (p: Partial<AdsetDraft>) => void }) {
+  const [defaults, setDefaults] = useState<{ beneficiary?: string; payor?: string } | null>(null);
+  useEffect(() => {
+    let live = true;
+    lookupDsaDefaults(accountId).then((res) => {
+      if (!live || !res.ok) return;
+      setDefaults(res);
+      // Fill blanks once with the account's defaults (people can still change them).
+      if (!adset.dsaBeneficiary && !adset.dsaPayor && (res.beneficiary || res.payor)) onChange({ dsaBeneficiary: res.beneficiary ?? "", dsaPayor: res.payor ?? "" });
+    });
+    return () => {
+      live = false;
+    };
+    // Once per ad set (the component is keyed by it).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId]);
+  return (
+    <Section title="EU ads transparency" icon={Landmark} description="This ad set reaches the EU, so Meta requires who benefits from the ads and who pays for them (Digital Services Act).">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Field label="Beneficiary" hint={defaults?.beneficiary ? `Ad account default: ${defaults.beneficiary}` : "The person or organization the ads promote."}>
+          <Input value={adset.dsaBeneficiary} maxLength={512} onChange={(e) => onChange({ dsaBeneficiary: e.target.value })} />
+        </Field>
+        <Field label="Paid for by" hint={defaults?.payor ? `Ad account default: ${defaults.payor}` : "The person or organization paying for the ads."}>
+          <Input value={adset.dsaPayor} maxLength={512} onChange={(e) => onChange({ dsaPayor: e.target.value })} />
+        </Field>
+      </div>
+    </Section>
+  );
+}
+
+export function AdsetStep(props: Parameters<typeof AdsetEditor>[0] & { parent: ParentView | null }) {
+  // New ads going into an existing ad set use it exactly as it is in Meta.
+  if (props.parent?.target.mode === "adset") return <ExistingAdsetCard parent={props.parent} />;
+  return <AdsetEditor {...props} />;
+}
+
+function AdsetEditor({
   state,
   names,
   accountId,
@@ -61,6 +101,7 @@ export function AdsetStep({
   const r = resolveAdset(c.objective, s);
   const set = (p: Partial<AdsetDraft>) => patch(s.key, p);
   const cbo = c.budgetLevel === "campaign";
+  const uid = useId();
 
   const [pixels, setPixels] = useState<{ id: string; name: string }[] | null>(null);
   const [apps, setApps] = useState<AppOption[] | null>(null);
@@ -104,7 +145,7 @@ export function AdsetStep({
       </Section>
 
       <Section title="Conversion location" icon={Target} description="Where you want people to go when they tap the ad.">
-        <div role="radiogroup" aria-label="Conversion location" className="grid gap-2 sm:grid-cols-2">
+        <div role="radiogroup" aria-label="Conversion location" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {r.destinations.map((d) => {
             const { icon: Icon, body } = DESTINATION_CARDS[d];
             const on = r.destination === d;
@@ -117,7 +158,7 @@ export function AdsetStep({
                 onClick={() => setDestination(d)}
                 className={cn("flex gap-3 rounded-xl border p-3 text-left transition-colors", on ? "border-primary bg-primary-soft/40 ring-4 ring-[var(--ring)]" : "border-line hover:bg-hover/60")}
               >
-                <span className={cn("grid size-8 shrink-0 place-items-center rounded-lg", on ? "bg-primary text-white" : "bg-surface-2 text-muted ring-1 ring-inset ring-line")}>
+                <span className={cn("grid size-8 shrink-0 place-items-center rounded-lg", on ? "bg-primary text-on-primary" : "bg-surface-2 text-muted ring-1 ring-inset ring-line")}>
                   <Icon className="size-4" aria-hidden />
                 </span>
                 <span>
@@ -154,7 +195,7 @@ export function AdsetStep({
         )}
 
         {r.destination === "app" && (
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field label="App" hint={apps && apps.length === 0 ? "No apps are connected to this ad account. Enter the app ID instead." : undefined}>
               {apps && apps.length > 0 ? (
                 <Select
@@ -193,7 +234,7 @@ export function AdsetStep({
       </Section>
 
       <Section title="Performance goal" icon={Crosshair} description="What Meta optimizes delivery for.">
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Performance goal">
             <Select value={r.goal} onChange={(e) => set({ goal: e.target.value })}>
               {r.goals.map((g) => (
@@ -222,7 +263,7 @@ export function AdsetStep({
           )}
         </div>
         {r.pixel !== "none" && (
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field label={`Pixel${r.pixel === "optional" ? " (optional)" : ""}`}>
               {pixels && pixels.length > 0 ? (
                 <Select value={s.pixelId} onChange={(e) => set({ pixelId: e.target.value })}>
@@ -238,8 +279,8 @@ export function AdsetStep({
                 <Input value={s.pixelId} placeholder={pixels ? "No pixels found. Enter a pixel ID" : "Loading pixels…"} inputMode="numeric" onChange={(e) => set({ pixelId: e.target.value.replace(/\D/g, "") })} />
               )}
             </Field>
-            <Field label="Conversion event">
-              <ConversionEventSelect accountId={accountId} pixelId={s.pixelId} value={s.conversionEvent} onChange={(conversionEvent) => set({ conversionEvent })} />
+            <Field label="Conversion event" htmlFor={`${uid}-event`}>
+              <ConversionEventSelect id={`${uid}-event`} accountId={accountId} pixelId={s.pixelId} value={s.conversionEvent} onChange={(conversionEvent) => set({ conversionEvent })} />
             </Field>
           </div>
         )}
@@ -248,13 +289,13 @@ export function AdsetStep({
 
       <Section title="Budget & bidding" icon={Wallet} description={cbo ? "This ad set uses the campaign budget (CBO)." : "Ad set budget (ABO): this ad set spends its own budget."}>
         {!cbo && (
-          <Field label={`${c.budgetSchedule === "lifetime" ? "Lifetime" : "Daily"} budget`}>
-            <MoneyInput currency={currency} value={s.budget} onChange={(v) => set({ budget: v })} />
+          <Field label={`${c.budgetSchedule === "lifetime" ? "Lifetime" : "Daily"} budget`} htmlFor={`${uid}-budget`}>
+            <MoneyInput id={`${uid}-budget`} currency={currency} value={s.budget} onChange={(v) => set({ budget: v })} />
           </Field>
         )}
         {needsBidAmount(c.bidStrategy) && (
-          <Field label={c.bidStrategy === "COST_CAP" ? "Cost per result goal" : "Bid cap"} hint={c.bidStrategy === "COST_CAP" ? "The average cost per result you want to stay around." : "The most you'll bid in any auction."}>
-            <MoneyInput currency={currency} value={s.bidAmount} onChange={(v) => set({ bidAmount: v })} />
+          <Field label={c.bidStrategy === "COST_CAP" ? "Cost per result goal" : "Bid cap"} hint={c.bidStrategy === "COST_CAP" ? "The average cost per result you want to stay around." : "The most you'll bid in any auction."} htmlFor={`${uid}-bid`}>
+            <MoneyInput id={`${uid}-bid`} currency={currency} value={s.bidAmount} onChange={(v) => set({ bidAmount: v })} />
           </Field>
         )}
         {c.bidStrategy === "LOWEST_COST_WITH_MIN_ROAS" && (
@@ -262,10 +303,20 @@ export function AdsetStep({
             <Input type="number" min="0.01" step="0.01" value={s.roasFloor} onChange={(e) => set({ roasFloor: e.target.value })} />
           </Field>
         )}
-        {cbo && !needsBidAmount(c.bidStrategy) && c.bidStrategy !== "LOWEST_COST_WITH_MIN_ROAS" && <p className="text-[12.5px] text-muted">Nothing to set here. Change the budget on the Campaign step.</p>}
+        {cbo && (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label={`Minimum ${c.budgetSchedule === "lifetime" ? "lifetime" : "daily"} spend (optional)`} hint="Meta tries to spend at least this on the ad set." htmlFor={`${uid}-min`}>
+              <MoneyInput id={`${uid}-min`} currency={currency} value={s.minSpend} placeholder="No minimum" onChange={(v) => set({ minSpend: v })} />
+            </Field>
+            <Field label={`Maximum ${c.budgetSchedule === "lifetime" ? "lifetime" : "daily"} spend (optional)`} hint="The most of the campaign budget this ad set may use." htmlFor={`${uid}-max`}>
+              <MoneyInput id={`${uid}-max`} currency={currency} value={s.maxSpend} placeholder="No maximum" onChange={(v) => set({ maxSpend: v })} />
+            </Field>
+          </div>
+        )}
       </Section>
 
       <AudienceEditor key={`aud-${s.key}`} accountId={accountId} value={s.audience} onChange={(audience) => set({ audience })} />
+      {(reachesEu(s.audience) || s.dsaBeneficiary || s.dsaPayor) && <DsaFields key={`dsa-${s.key}`} accountId={accountId} adset={s} onChange={set} />}
       <PlacementsEditor key={`pl-${s.key}`} value={s.placements} onChange={(placements) => set({ placements })} />
     </div>
   );

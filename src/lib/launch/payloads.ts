@@ -1,14 +1,12 @@
 /** Pure builders for the exact payloads sent to the Marketing API (unit tested). */
 import { needsBidAmount, type Placements } from "@/lib/meta/editor-types";
 import { applyAudience, applyPlacements } from "@/lib/meta/targeting";
-import { destinationType, isConversionGoal, MESSAGING_CTA, pixelUse, type Destination, type MessagingApp } from "./objectives";
+import { destinationType, isConversionGoal, LEAD_CTAS, LEAD_FORM_LINK, MESSAGING_CTA, pixelUse, type Destination, type MessagingApp } from "./objectives";
 import { CREATIVE_FEATURES, VERTICAL_POSITIONS, type AdInput, type AdsetInput, type LaunchSpec, type TemplateConfig } from "./spec";
 
-// Currencies Meta stores without minor units (offset 1). Everything else is offset 100.
-const ZERO_DECIMAL = new Set(["CLP", "COP", "CRC", "HUF", "ISK", "IDR", "JPY", "KRW", "PYG", "TWD", "VND"]);
-const offset = (currency: string) => (ZERO_DECIMAL.has(currency.toUpperCase()) ? 1 : 100);
-export const toMinorUnits = (amount: number, currency: string) => Math.round(amount * offset(currency));
-export const fromMinorUnits = (minor: number, currency: string) => minor / offset(currency);
+import { toMinorUnits } from "@/lib/money";
+
+export { fromMinorUnits, toMinorUnits } from "@/lib/money";
 
 type Payload = Record<string, unknown>;
 
@@ -26,8 +24,8 @@ export function campaignPayload(spec: LaunchSpec, currency: string): Payload {
     p[c.budgetSchedule === "daily" ? "daily_budget" : "lifetime_budget"] = toMinorUnits(c.budget ?? 0, currency);
     p.bid_strategy = c.bidStrategy;
   } else {
-    // Required by the API when the campaign has no campaign-level budget.
-    p.is_adset_budget_sharing_enabled = false;
+    // Required by the API when the campaign has no campaign-level budget. Sharing only exists for daily budgets.
+    p.is_adset_budget_sharing_enabled = !!c.budgetSharing && c.budgetSchedule === "daily";
   }
   if (c.spendCap) p.spend_cap = toMinorUnits(c.spendCap, currency);
   return p;
@@ -47,7 +45,7 @@ export function promotedObject(spec: Pick<LaunchSpec, "campaign" | "pageId">, ad
   const pixel = pixelUse(objective, adset.destination, adset.optimizationGoal, adset.messagingApps);
   const withPixel = pixel !== "none" && adset.pixelId && adset.conversionEvent ? { pixel_id: adset.pixelId, custom_event_type: adset.conversionEvent } : undefined;
   if (adset.destination === "messaging") return { page_id: spec.pageId, ...withPixel };
-  if (objective === "OUTCOME_AWARENESS") return { page_id: spec.pageId };
+  if (adset.destination === "instant_form" || objective === "OUTCOME_AWARENESS") return { page_id: spec.pageId };
   return withPixel;
 }
 
@@ -73,6 +71,15 @@ export function adsetPayload(spec: LaunchSpec, adset: AdsetInput, campaignId: st
     p[c.budgetSchedule === "daily" ? "daily_budget" : "lifetime_budget"] = toMinorUnits(adset.budget ?? 0, currency);
     p.bid_strategy = c.bidStrategy;
   }
+  if (c.budgetLevel === "campaign") {
+    const per = c.budgetSchedule === "daily" ? "daily" : "lifetime";
+    if (adset.minSpend) p[`${per}_min_spend_target`] = toMinorUnits(adset.minSpend, currency);
+    if (adset.maxSpend) p[`${per}_spend_cap`] = toMinorUnits(adset.maxSpend, currency);
+  }
+  if (adset.dsaBeneficiary && adset.dsaPayor) {
+    p.dsa_beneficiary = adset.dsaBeneficiary;
+    p.dsa_payor = adset.dsaPayor;
+  }
   if (needsBidAmount(c.bidStrategy) && adset.bidAmount) p.bid_amount = toMinorUnits(adset.bidAmount, currency);
   if (c.bidStrategy === "LOWEST_COST_WITH_MIN_ROAS" && adset.roasFloor) p.bid_constraints = { roas_average_floor: Math.round(adset.roasFloor * 10000) };
   return p;
@@ -81,8 +88,8 @@ export function adsetPayload(spec: LaunchSpec, adset: AdsetInput, campaignId: st
 export type MediaRef = { kind: "image"; hash: string } | { kind: "video"; videoId: string; thumbnailUrl: string };
 
 // Positions the paired-creative rules understand; other placements are served by Meta's defaults.
-const FB_CREATIVE = new Set(["feed", "profile_feed", "marketplace", "video_feeds", "search", "instream_video", "story", "facebook_reels"]);
-const IG_CREATIVE = new Set(["stream", "profile_feed", "explore", "explore_home", "ig_search", "story", "reels"]);
+const FB_CREATIVE = new Set(["feed", "profile_feed", "marketplace", "search", "instream_video", "story", "facebook_reels"]);
+const IG_CREATIVE = new Set(["stream", "profile_feed", "explore_home", "ig_search", "story", "reels", "profile_reels"]);
 
 /**
  * FB + IG positions an ad set serves, for splitting a paired creative into feed (1:1) and Stories/Reels
@@ -98,7 +105,7 @@ export function creativePositions(p: Placements, defaults: Placements): { facebo
 
 // Positions a format can't serve; leaving them in a customization rule makes the API reject it.
 const UNSUPPORTED = {
-  image: { facebook: new Set(["instream_video", "video_feeds"]), instagram: new Set<string>() },
+  image: { facebook: new Set(["instream_video"]), instagram: new Set<string>() },
   video: { facebook: new Set<string>(), instagram: new Set(["explore_home"]) },
 };
 
@@ -126,9 +133,6 @@ export function creativeFeaturesSpec(optIn: readonly string[]) {
   return Object.fromEntries(CREATIVE_FEATURES.map((f) => [f, { enroll_status: optIn.includes(f) ? "OPT_IN" : "OPT_OUT" }]));
 }
 
-/** Copy fields of an ad with a single text option, as the in-table editor edits them. */
-export type AdCopy = { primaryText: string; headline: string; description?: string; url: string; cta: string };
-
 /** Where an ad's clicks go: decided by its ad set. */
 export type CreativeDestination = { kind: Destination; apps?: readonly MessagingApp[]; storeUrl?: string };
 
@@ -137,17 +141,21 @@ export const sameMedia = (a: MediaRef, b: MediaRef) =>
 
 const hasPositions = (spec: Payload) => Array.isArray(spec.publisher_platforms) && spec.publisher_platforms.length > 0;
 
-type CreativeAd = Pick<AdInput, "primaryTexts" | "headlines" | "description" | "url" | "displayLink" | "cta" | "creativeFeaturesOptIn">;
+type CreativeAd = Pick<AdInput, "primaryTexts" | "headlines" | "description" | "url" | "displayLink" | "cta" | "creativeFeaturesOptIn"> &
+  Partial<Pick<AdInput, "multiAdvertiser" | "shopDestination" | "leadFormId">>;
 
-/** The single-text copy shape of the in-table editor, as a builder ad. */
-export const fromCopy = (ad: AdCopy, optIn: readonly string[] = []): CreativeAd => ({
-  primaryTexts: [ad.primaryText],
-  headlines: [ad.headline],
-  description: ad.description || undefined,
-  url: ad.url,
-  cta: ad.cta,
-  creativeFeaturesOptIn: optIn as CreativeAd["creativeFeaturesOptIn"],
-});
+/**
+ * Settings every creative states explicitly, because Meta's defaults switch them on: Advantage+ enhancements,
+ * multi-advertiser ads, and (website ads only, when the buyer turned it off) routing clicks to a Meta shop.
+ */
+function creativeControls(ad: CreativeAd, website: boolean): Payload {
+  const p: Payload = {
+    degrees_of_freedom_spec: { creative_features_spec: creativeFeaturesSpec(ad.creativeFeaturesOptIn) },
+    contextual_multi_ads: { enroll_status: ad.multiAdvertiser ? "OPT_IN" : "OPT_OUT" },
+  };
+  if (website && ad.shopDestination === false) p.destination_spec = { destination_type: "WEBSITE_AND_SHOP_OPT_OUT" };
+  return p;
+}
 
 /**
  * One image or video for every placement: the classic link_data / video_data creative. With
@@ -163,6 +171,8 @@ export function singleMediaCreativePayload(args: {
   link: string;
   cta: Payload;
   textsInFeed?: boolean;
+  /** Clicks go to a website (not a chat or app store). */
+  website?: boolean;
 }): Payload {
   const { media, ad } = args;
   const inline = !args.textsInFeed;
@@ -186,12 +196,7 @@ export function singleMediaCreativePayload(args: {
       call_to_action: ad.displayLink ? { ...args.cta, value: { ...(args.cta.value as Payload), link_caption: ad.displayLink } } : args.cta,
     };
   }
-  const p: Payload = {
-    name: args.name,
-    object_story_spec: objectStorySpec,
-    // Advantage+ creative enhancements default ON; opt out of everything not explicitly allowed.
-    degrees_of_freedom_spec: { creative_features_spec: creativeFeaturesSpec(ad.creativeFeaturesOptIn) },
-  };
+  const p: Payload = { name: args.name, object_story_spec: objectStorySpec, ...creativeControls(ad, args.website ?? true) };
   if (args.urlTags) p.url_tags = args.urlTags;
   return p;
 }
@@ -217,10 +222,19 @@ export function creativePayload(args: {
   const { square, vertical, ad, destination } = args;
   const base = { name: args.name, pageId: args.pageId, instagramUserId: args.instagramUserId, ad };
 
+  if (destination.kind === "instant_form") {
+    // The form opens on Facebook / Instagram: one file for every placement, the first text option, and a CTA
+    // that carries the form (the link is Meta's placeholder for lead ads).
+    const type = (LEAD_CTAS as readonly string[]).includes(ad.cta) ? ad.cta : LEAD_CTAS[0];
+    const cta = { type, value: { link: LEAD_FORM_LINK, lead_gen_form_id: ad.leadFormId } };
+    const p = singleMediaCreativePayload({ ...base, ad: { ...ad, primaryTexts: ad.primaryTexts.slice(0, 1), headlines: ad.headlines.slice(0, 1) }, media: square, urlTags: "", link: LEAD_FORM_LINK, cta, website: false });
+    return p;
+  }
+
   if (destination.kind === "messaging") {
     const apps = destination.apps?.length ? destination.apps : (["MESSENGER"] as const);
     const ctas = apps.map((a) => ({ type: MESSAGING_CTA[a].type, value: { app_destination: a, link: MESSAGING_CTA[a].link } }));
-    const p = singleMediaCreativePayload({ ...base, media: square, urlTags: "", link: ctas[0].value.link, cta: ctas[0] });
+    const p = singleMediaCreativePayload({ ...base, media: square, urlTags: "", link: ctas[0].value.link, cta: ctas[0], website: false });
     // Several apps: Meta picks the app per person, from the calls to action listed here.
     if (apps.length > 1) p.asset_feed_spec = { optimization_type: "DOF_MESSAGING_DESTINATION", call_to_actions: ctas };
     return p;
@@ -250,7 +264,7 @@ export function creativePayload(args: {
         link_urls: [{ website_url: link, ...(ad.displayLink ? { display_url: ad.displayLink } : {}) }],
         call_to_action_types: [ad.cta],
       },
-      degrees_of_freedom_spec: { creative_features_spec: creativeFeaturesSpec(ad.creativeFeaturesOptIn) },
+      ...creativeControls(ad, destination.kind !== "app"),
     };
     if (urlTags) p.url_tags = urlTags;
     return p;
@@ -275,7 +289,7 @@ export function creativePayload(args: {
   const single = sameMedia(square, vertical) ? square : !hasPositions(rules.vertical) ? square : !hasPositions(rules.square) ? vertical : null;
   if (single) {
     const oneText = ad.primaryTexts.length === 1 && ad.headlines.length === 1;
-    const p = singleMediaCreativePayload({ ...base, media: single, urlTags, link, cta: { type: ad.cta, value: { link } }, textsInFeed: !oneText });
+    const p = singleMediaCreativePayload({ ...base, media: single, urlTags, link, cta: { type: ad.cta, value: { link } }, textsInFeed: !oneText, website: destination.kind !== "app" });
     // Several text options, stored the way Ads Manager does: file and link in link_data / video_data,
     // the texts in an asset feed, and Meta picks the best combination per person.
     if (!oneText) p.asset_feed_spec = { bodies: texts.bodies, titles: texts.titles, optimization_type: "DEGREES_OF_FREEDOM" };
@@ -296,15 +310,43 @@ export function creativePayload(args: {
   });
 }
 
-export function adPayload(name: string, adsetId: string, creativeId: string): Payload {
-  return { name, adset_id: adsetId, creative: { creative_id: creativeId }, status: "PAUSED" };
+/** Second-level suffixes under which the registrable domain has three labels (example.co.uk). */
+const TWO_PART_SUFFIXES = new Set(["co.uk", "org.uk", "ac.uk", "com.au", "net.au", "org.au", "co.nz", "com.br", "com.mx", "co.jp", "co.in", "com.sg", "co.za", "com.ar", "com.co", "com.tr", "co.il", "com.hk"]);
+
+/** The domain a pixel campaign's conversions are attributed to: the website's registrable domain (shop.example.com → example.com). */
+export function registrableDomain(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+  const labels = host.split(".").filter(Boolean);
+  if (labels.length < 2 || /^\d+$/.test(labels.at(-1)!)) return undefined;
+  const keep = labels.length >= 3 && TWO_PART_SUFFIXES.has(labels.slice(-2).join(".")) ? 3 : 2;
+  return labels.slice(-keep).join(".");
+}
+
+export function adPayload(name: string, adsetId: string, creativeId: string, extra: { conversionDomain?: string; appId?: string } = {}): Payload {
+  const p: Payload = { name, adset_id: adsetId, creative: { creative_id: creativeId }, status: "PAUSED" };
+  // Meta requires it on ads in campaigns that share data with a pixel (Ads Manager always sets it).
+  if (extra.conversionDomain) p.conversion_domain = extra.conversionDomain;
+  // App ads no longer track installs or app events unless told to.
+  if (extra.appId)
+    p.tracking_specs = [
+      { "action.type": ["mobile_app_install"], application: [extra.appId] },
+      { "action.type": ["app_custom_event"], application: [extra.appId] },
+    ];
+  return p;
 }
 
 /** What makes two ad sets need different creatives for the same ad: where clicks go, and which placements to split. */
 export function creativeVariantKey(adset: AdsetInput, defaults: Placements): string {
   const apps = adset.destination === "messaging" ? [...adset.messagingApps].sort() : [];
   const store = adset.destination === "app" ? adset.app?.storeUrl : undefined;
-  const positions = adset.destination === "messaging" ? null : creativePositions(adset.placements, defaults);
+  // Chat and instant-form creatives use one file everywhere, so placements don't split them.
+  const positions = adset.destination === "messaging" || adset.destination === "instant_form" ? null : creativePositions(adset.placements, defaults);
   return JSON.stringify([adset.destination, apps, store ?? null, positions]);
 }
 

@@ -5,7 +5,7 @@ import { NoAccount } from "@/components/no-account";
 import { Avatar, Badge, Card, EmptyState, PageHeader, PageSkeleton } from "@/components/ui";
 import { hasRole } from "@/lib/auth/session";
 import { formatMoney } from "@/lib/format";
-import { fromMinorUnits } from "@/lib/launch/payloads";
+import { fromMinorUnits } from "@/lib/money";
 import { BID_STRATEGY_LABELS, label } from "@/lib/meta/labels";
 import type { Change } from "@/lib/meta/objects";
 import { getHistory, type HistoryEntry } from "@/lib/queries/history";

@@ -90,7 +90,13 @@ export function Uploader({ clientId }: { clientId: string }) {
               "Uploading…"
             ) : (
               <>
-                Drop images or videos here, or <span className="text-primary">browse files</span>
+                {/* Drag and drop needs a mouse; touch screens just tap. */}
+                <span className="pointer-coarse:hidden">
+                  Drop images or videos here, or <span className="text-primary-ink">browse files</span>
+                </span>
+                <span className="hidden pointer-coarse:inline">
+                  Tap to choose <span className="text-primary-ink">images or videos</span>
+                </span>
               </>
             )}
           </p>

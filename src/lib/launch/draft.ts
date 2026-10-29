@@ -30,6 +30,7 @@ import {
   type CreativeFeature,
   type LaunchInput,
   type LaunchIssue,
+  type LaunchTarget,
   type MediaPick,
   type TemplateConfig,
 } from "./spec";
@@ -46,6 +47,8 @@ export type CampaignDraft = {
   budget: string;
   bidStrategy: BidStrategy;
   spendCap: string;
+  /** Ad set budgets (daily): let Meta move up to 20% between ad sets. */
+  budgetSharing: boolean;
   specialAdCategories: string[];
   specialAdCountries: string;
   /** datetime-local values, wall-clock time in the ad account's timezone. */
@@ -68,6 +71,12 @@ export type AdsetDraft = {
   attribution: Attribution;
   bidAmount: string;
   roasFloor: string;
+  /** Campaign budget only: spend limits for this ad set. */
+  minSpend: string;
+  maxSpend: string;
+  /** EU Digital Services Act transparency (ads reaching the EU). */
+  dsaBeneficiary: string;
+  dsaPayor: string;
   audience: Audience;
   placements: Placements;
 };
@@ -93,13 +102,21 @@ export type AdDraft = {
   displayLink: string;
   urlTags: string;
   cta: string;
+  /** Instant-form ad sets: the form the ad opens. */
+  leadFormId: string;
   /** Advantage+ creative enhancements switched on. */
   features: CreativeFeature[];
+  /** Multi-advertiser ads: Meta may show this ad next to other businesses' ads. */
+  multiAdvertiser: boolean;
+  /** Website ads: Meta may send people to the advertiser's Facebook / Instagram shop instead. */
+  shopDestination: boolean;
 };
 
 export type BuilderState = {
   v: 1;
   step: number;
+  /** A new campaign, new ad sets in an existing campaign, or new ads in an existing ad set. */
+  target: LaunchTarget;
   templateId: string;
   label: string;
   pageId: string;
@@ -143,6 +160,10 @@ export function blankAdset(objective: LaunchObjective, template?: TemplateConfig
     attribution: template?.attribution ?? { clickDays: 7, viewDays: 1, engagedViewDays: 0 },
     bidAmount: "",
     roasFloor: "",
+    minSpend: "",
+    maxSpend: "",
+    dsaBeneficiary: "",
+    dsaPayor: "",
     audience: template ? templateAudience(template) : DEFAULT_AUDIENCE,
     placements: template ? templatePlacements(template) : DEFAULT_PLACEMENTS,
   };
@@ -175,7 +196,10 @@ export function blankAd(from?: AdDraft, template?: TemplateConfig): AdDraft {
     displayLink: from?.displayLink ?? "",
     urlTags: from?.urlTags ?? "",
     cta: from?.cta ?? template?.cta ?? "SHOP_NOW",
+    leadFormId: from?.leadFormId ?? "",
     features: from ? [...from.features] : [...(template?.creativeFeaturesOptIn ?? [])],
+    multiAdvertiser: from?.multiAdvertiser ?? false,
+    shopDestination: from?.shopDestination ?? true,
   };
 }
 
@@ -185,6 +209,7 @@ export function blankState(ctx: { pageId: string; igId: string; urlTags: string;
   return {
     v: 1,
     step: 0,
+    target: { mode: "new" },
     templateId: ctx.template?.id ?? "",
     label: "",
     pageId: ctx.pageId,
@@ -198,6 +223,7 @@ export function blankState(ctx: { pageId: string; igId: string; urlTags: string;
       budget: String(t?.defaultBudget ?? 100),
       bidStrategy: "LOWEST_COST_WITHOUT_CAP",
       spendCap: "",
+      budgetSharing: false,
       specialAdCategories: [],
       specialAdCountries: "US",
       start: "",
@@ -236,10 +262,46 @@ export function hydrate(raw: unknown, fallback: BuilderState): BuilderState {
     ...fallback,
     ...s,
     v: 1,
+    target: s.target?.mode ? s.target : { mode: "new" },
     campaign: { ...fallback.campaign, ...s.campaign },
     adsets: adsets.map((x) => ({ ...blankAdset(objective), ...x, key: x.key || newKey() })),
     ads: ads.map((x) => ({ ...blankAd(), ...x, key: x.key || newKey() })),
   };
+}
+
+/** The existing campaign (and ad set) a launch adds to, as the builder shows it. Read live from Meta by the page. */
+export type ParentView = {
+  target: Exclude<LaunchTarget, { mode: "new" }>;
+  campaign: Pick<CampaignDraft, "name" | "objective" | "budgetLevel" | "budgetSchedule" | "bidStrategy" | "specialAdCategories"> & { budget?: number; status: string };
+  adset?: Omit<AdsetDraft, "key" | "nameEdited" | "budget" | "bidAmount" | "roasFloor" | "minSpend" | "maxSpend" | "dsaBeneficiary" | "dsaPayor"> & { status: string };
+};
+
+/**
+ * Pins the parts of the state that belong to the existing campaign / ad set. Applied on open and after anything
+ * that could change them (e.g. picking a template), so they always match Meta.
+ */
+export function withParent(state: BuilderState, parent: ParentView): BuilderState {
+  const p = parent.campaign;
+  const cbo = p.budgetLevel === "campaign";
+  const campaign: CampaignDraft = {
+    ...state.campaign,
+    name: p.name,
+    nameEdited: true,
+    objective: p.objective,
+    budgetLevel: p.budgetLevel,
+    // Without a campaign budget, new ad sets take the schedule and bid strategy chosen here.
+    budgetSchedule: cbo ? p.budgetSchedule : state.campaign.budgetSchedule,
+    bidStrategy: cbo ? p.bidStrategy : state.campaign.bidStrategy,
+    budget: p.budget !== undefined ? String(p.budget) : "",
+    spendCap: "",
+    specialAdCategories: [...p.specialAdCategories],
+    ...(parent.target.mode === "adset" ? { start: "", end: "" } : {}),
+  };
+  const adsets =
+    parent.target.mode === "adset" && parent.adset
+      ? [{ ...blankAdset(p.objective), ...parent.adset, key: state.adsets[0]?.key ?? newKey(), nameEdited: true }]
+      : state.adsets;
+  return { ...state, target: parent.target, campaign, adsets };
 }
 
 /** Destination and goal valid for the campaign objective (the stored values may predate an objective change). */
@@ -347,6 +409,7 @@ export function toLaunchInput(
     draftId: ctx.draftId,
     clientId: ctx.clientId,
     adAccountId: ctx.adAccountId,
+    target: state.target,
     templateId: state.templateId || undefined,
     pageId: state.pageId,
     instagramUserId: state.igId || undefined,
@@ -358,6 +421,7 @@ export function toLaunchInput(
       budget: cbo ? positiveNumber(c.budget) : undefined,
       bidStrategy: c.bidStrategy,
       spendCap: positiveNumber(c.spendCap),
+      budgetSharing: c.budgetSharing,
       specialAdCategories: c.specialAdCategories,
       specialAdCountries: c.specialAdCategories.length ? [...new Set(c.specialAdCountries.toUpperCase().split(/[\s,;]+/).filter((x) => /^[A-Z]{2}$/.test(x)))] : [],
       startTime: toIso(c.start, ctx.timeZone),
@@ -365,6 +429,9 @@ export function toLaunchInput(
     },
     adsets: state.adsets.map((s, j) => {
       const r = resolveAdset(c.objective, s);
+      // An existing ad set is only described here (the server re-reads it from Meta). Its targeting may use
+      // locations the editor doesn't model (e.g. map pins), so don't let that fail the shape check.
+      const audience = state.target.mode === "adset" && s.audience.locations.length === 0 ? { ...s.audience, locations: [{ kind: "country" as const, key: "US", name: "United States" }] } : s.audience;
       return {
         name: names.adsets[j],
         budget: cbo ? undefined : positiveNumber(s.budget),
@@ -377,7 +444,11 @@ export function toLaunchInput(
         attribution: s.attribution,
         bidAmount: positiveNumber(s.bidAmount),
         roasFloor: positiveNumber(s.roasFloor),
-        audience: s.audience,
+        minSpend: cbo ? positiveNumber(s.minSpend) : undefined,
+        maxSpend: cbo ? positiveNumber(s.maxSpend) : undefined,
+        dsaBeneficiary: optional(s.dsaBeneficiary),
+        dsaPayor: optional(s.dsaPayor),
+        audience,
         placements: s.placements,
       };
     }),
@@ -391,7 +462,10 @@ export function toLaunchInput(
       displayLink: optional(a.displayLink),
       urlTags: a.urlTags.trim(),
       cta: app && !(APP_CTAS as readonly string[]).includes(a.cta) ? "INSTALL_MOBILE_APP" : a.cta,
+      leadFormId: optional(a.leadFormId),
       creativeFeaturesOptIn: a.features.filter(isCreativeFeature),
+      multiAdvertiser: a.multiAdvertiser,
+      shopDestination: a.shopDestination,
     })),
   };
 }
@@ -402,10 +476,21 @@ export type AssetInfo = { kind: "image" | "video"; aspect: string };
 export function launchIssues(input: ReturnType<typeof toLaunchInput>, asset: (id: string) => AssetInfo | undefined = () => undefined): { data?: LaunchInput; issues: LaunchIssue[] } {
   const issues: LaunchIssue[] = [];
   if (!input.pageId) issues.push({ step: "campaign", where: "Campaign", message: "Choose the Facebook Page the ads run as." });
+  // Blank names: cleared by hand, or a naming pattern that rendered nothing.
+  const unnamed = new Set<string>();
+  const nameIssue = (step: LaunchIssue["step"], where: string, noun: string) => {
+    unnamed.add(where);
+    issues.push({ step, where, message: `Give the ${noun} a name.` });
+  };
+  if (!input.campaign.name.trim()) nameIssue("campaign", "Campaign", "campaign");
+  input.adsets.forEach((s, j) => {
+    if (!s.name.trim()) nameIssue("adsets", `Ad set ${j + 1}`, "ad set");
+  });
   const videoGoal = input.adsets.some((s) => VIDEO_GOALS.has(s.optimizationGoal));
   const website = input.adsets.some((s) => needsWebsite(s.destination));
   input.ads.forEach((a, i) => {
     const where = `Ad ${i + 1}`;
+    if (!a.name.trim()) nameIssue("ads", where, "ad");
     if (website && !a.url) issues.push({ step: "ads", where, message: "Enter the website URL." });
     if (!a.media) issues.push({ step: "ads", where, message: "Add an image or video." });
     else {
@@ -425,7 +510,12 @@ export function launchIssues(input: ReturnType<typeof toLaunchInput>, asset: (id
   if (!parsed.success) {
     // The checks above already explain empty fields more plainly than zod would.
     const known = new Set(issues.map((x) => x.where));
-    const extra = zodIssues(parsed.error, 20).filter((z) => !(known.has(z.where) && /^(media|primaryTexts|headlines)\b/.test(z.message)) && !(z.message.startsWith("pageId") && !input.pageId));
+    const extra = zodIssues(parsed.error, 20).filter(
+      (z) =>
+        !(known.has(z.where) && /^(media|primaryTexts|headlines)\b/.test(z.message)) &&
+        !(z.message.startsWith("pageId") && !input.pageId) &&
+        !(unnamed.has(z.where) && z.message.startsWith("name:")),
+    );
     return { issues: [...issues, ...extra] };
   }
   const more = validateLaunch(parsed.data);

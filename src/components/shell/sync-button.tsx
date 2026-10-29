@@ -3,7 +3,7 @@
 import { RefreshCw } from "lucide-react";
 import { useTransition } from "react";
 import { syncNow } from "@/app/(app)/actions";
-import { cn } from "@/components/ui";
+import { cn, focusRing } from "@/components/ui";
 import { toast } from "@/components/toast";
 
 export function SyncButton({ accountId }: { accountId: string }) {
@@ -20,7 +20,7 @@ export function SyncButton({ accountId }: { accountId: string }) {
           toast(res?.ok ? (res.message ?? "Sync started") : (res?.error ?? "Sync failed"), res?.ok ? "info" : "error");
         })
       }
-      className="grid size-7 place-items-center rounded-md text-faint transition-colors hover:bg-hover hover:text-ink"
+      className={cn("grid size-7 place-items-center rounded-md text-faint transition-colors hover:bg-hover hover:text-ink", focusRing)}
     >
       <RefreshCw className={cn("size-3.5", pending && "animate-spin")} />
     </button>

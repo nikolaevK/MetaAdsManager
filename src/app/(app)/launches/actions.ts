@@ -7,6 +7,7 @@ import { z } from "zod";
 import { failure, UserError, type ActionState } from "@/lib/action-result";
 import { audit } from "@/lib/audit";
 import { hasRole, requireUser } from "@/lib/auth/session";
+import { takeMetaQuota } from "@/lib/auth/user-rate";
 import { db } from "@/lib/db";
 import {
   adAccounts,
@@ -23,6 +24,7 @@ import { kickWorker } from "@/lib/jobs/kick";
 import { enqueue, PRIORITY } from "@/lib/jobs/queue";
 import { findOrCreateCreative, loadMedia } from "@/lib/creatives";
 import { VIDEO_GOALS } from "@/lib/launch/objectives";
+import { withLaunchParent } from "@/lib/launch/parent";
 import { creativeDestination, creativeGroups, creativePayload, creativePositions } from "@/lib/launch/payloads";
 import { launchJobKey } from "@/lib/launch/pipeline";
 import {
@@ -31,14 +33,17 @@ import {
   launchInputSchema,
   MAX_LAUNCH_CREATIVES,
   normalizeSpec,
+  reachesEu,
   validateLaunch,
   zodIssues,
   type AdInput,
   type AdsetInput,
+  type LaunchInput,
   type LaunchSpec,
   type MediaPick,
 } from "@/lib/launch/spec";
 import { buildUrlTags, DEFAULT_UTM_PARAMS } from "@/lib/launch/utm";
+import { getDsaDefaults } from "@/lib/meta/accounts";
 import { DEFAULT_PLACEMENTS } from "@/lib/meta/editor-types";
 import { ensureMetaMedia } from "@/lib/meta/media";
 import { generatePreview, PREVIEW_FORMATS, type PreviewFormat } from "@/lib/meta/previews";
@@ -78,6 +83,15 @@ async function loadAccount(accountId: string, clientId: string): Promise<Account
     .limit(1);
   if (!account) throw new UserError("Ad account is not connected to this client.");
   return account;
+}
+
+/** EU-reaching ad sets without their own DSA details use the ad account's defaults (which Meta would apply too). */
+async function withDsaDefaults(accountId: string, input: LaunchInput): Promise<LaunchInput> {
+  const missing = (s: LaunchInput["adsets"][number]) => reachesEu(s.audience) && (!s.dsaBeneficiary || !s.dsaPayor);
+  if (input.target.mode === "adset" || !input.adsets.some(missing)) return input;
+  const d = await getDsaDefaults(accountId).catch(() => ({ beneficiary: undefined, payor: undefined }));
+  if (!d.beneficiary || !d.payor) return input;
+  return { ...input, adsets: input.adsets.map((s) => (missing(s) ? { ...s, dsaBeneficiary: s.dsaBeneficiary || d.beneficiary, dsaPayor: s.dsaPayor || d.payor } : s)) };
 }
 
 type PreviewResult = { ok: true; src: string } | { ok: false; error: string; processing?: boolean };
@@ -132,7 +146,8 @@ const draftPreviewSchema = z.object({
 /** Real placement render for an ad that hasn't been launched yet, as it would run in the given ad set. */
 export async function previewDraftAction(input: z.input<typeof draftPreviewSchema>): Promise<PreviewResult> {
   try {
-    await requireUser("buyer");
+    const user = await requireUser("buyer");
+    takeMetaQuota(user.id);
     const data = draftPreviewSchema.parse(input);
     const account = await loadAccount(data.adAccountId, data.clientId);
     const { media, ...ad } = { ...data.ad, name: data.ad.name || "Preview" };
@@ -158,6 +173,7 @@ export async function previewDraftAction(input: z.input<typeof draftPreviewSchem
 export async function previewLaunchAdAction(launchId: string, adIndex: number, format: PreviewFormat): Promise<PreviewResult> {
   try {
     const user = await requireUser("viewer");
+    takeMetaQuota(user.id);
     const data = z.object({ launchId: z.string().min(1), adIndex: z.number().int().min(0).max(49), format: formatSchema }).parse({ launchId, adIndex, format });
     const [launch] = await db().select().from(launches).where(eq(launches.id, data.launchId)).limit(1);
     if (!launch) throw new UserError("Launch not found.");
@@ -203,9 +219,11 @@ export async function createLaunchAction(input: unknown): Promise<ActionState> {
   let launchId: string;
   try {
     const user = await requireUser("buyer");
-    const data = launchInputSchema.parse(input);
-    const account = await loadAccount(data.adAccountId, data.clientId);
-    if (data.templateId) await assertTemplate(data.templateId, data.clientId);
+    const parsed = launchInputSchema.parse(input);
+    const account = await loadAccount(parsed.adAccountId, parsed.clientId);
+    if (parsed.templateId) await assertTemplate(parsed.templateId, parsed.clientId);
+    // Adding to an existing campaign / ad set: its real settings (read live) replace what the browser sent.
+    const data = await withDsaDefaults(account.id, (await withLaunchParent(account, parsed)).input);
 
     const problems = validateLaunch(data);
     if (data.ads.length * creativeGroups(data, DEFAULT_PLACEMENTS).count > MAX_LAUNCH_CREATIVES)
@@ -222,6 +240,13 @@ export async function createLaunchAction(input: unknown): Promise<ActionState> {
       ads.push({ ...ad, creativeId: creative.id, ...(media.moreAssetIds?.length ? { moreAssetIds: media.moreAssetIds } : {}) });
     }
     const spec: LaunchSpec = { ...rest, ads, version: 2, urlTags: await utmTagsFor(data.clientId) };
+    const t = data.target;
+    const name =
+      t.mode === "campaign"
+        ? `${data.campaign.name} · +${data.adsets.length} ad set${data.adsets.length === 1 ? "" : "s"}`
+        : t.mode === "adset"
+          ? `${data.adsets[0].name} · +${data.ads.length} ad${data.ads.length === 1 ? "" : "s"}`
+          : data.campaign.name;
 
     const [inserted] = await db()
       .insert(launches)
@@ -230,10 +255,12 @@ export async function createLaunchAction(input: unknown): Promise<ActionState> {
         clientId: data.clientId,
         adAccountId: account.id,
         templateId: data.templateId ?? null,
-        name: data.campaign.name,
+        name: name.slice(0, 400),
         status: "queued",
         step: "Waiting for worker",
         spec,
+        // Lets the launch page link to the campaign it adds to; a new campaign's id is set once it exists.
+        metaCampaignId: t.mode === "new" ? null : t.campaignId,
         createdBy: user.id,
       })
       .onConflictDoNothing()
@@ -257,6 +284,7 @@ export async function createLaunchAction(input: unknown): Promise<ActionState> {
         adsets: data.adsets.length,
         ads: data.ads.length,
         objective: data.campaign.objective,
+        target: data.target,
       });
       kickWorker();
     } else {

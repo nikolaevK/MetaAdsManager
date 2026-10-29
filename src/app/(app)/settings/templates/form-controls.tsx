@@ -1,5 +1,6 @@
 import { Check, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import { Switch } from "@/app/(app)/campaigns/editor/fields";
 import { Card, CardHeader, cn } from "@/components/ui";
 
 /** Presentational building blocks for the template editor (used from the client form). */
@@ -118,7 +119,7 @@ export function AspectGlyph({ ratio, className }: { ratio: "square" | "vertical"
   );
 }
 
-/** Switch styled control backed by a checkbox; the whole row is the hit target. */
+/** Label + description beside the shared Switch; the whole row is the hit target. */
 export function ToggleRow({
   checked,
   onChange,
@@ -133,27 +134,12 @@ export function ToggleRow({
   className?: string;
 }) {
   return (
-    <label className={cn("flex cursor-pointer items-center justify-between gap-4 has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60", className)}>
+    <label className={cn("flex cursor-pointer items-center justify-between gap-4 has-[:disabled]:cursor-not-allowed", className)}>
       <span className="min-w-0">
         <span className="block text-[13px] font-medium text-ink">{label}</span>
         {description && <span className="mt-0.5 block text-[12.5px] leading-snug text-muted">{description}</span>}
       </span>
-      <input type="checkbox" role="switch" checked={checked} onChange={(e) => onChange(e.target.checked)} className="peer sr-only" />
-      <span
-        aria-hidden
-        className={cn(
-          "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors duration-150",
-          "peer-focus-visible:ring-4 peer-focus-visible:ring-[var(--ring)]",
-          checked ? "bg-primary" : "bg-[color-mix(in_oklab,var(--line)_55%,var(--muted))]",
-        )}
-      >
-        <span
-          className={cn(
-            "absolute left-0.5 size-4 rounded-full bg-surface shadow-[0_1px_2px_hsl(var(--shadow-color)/0.25)] transition-transform duration-150 dark:bg-ink",
-            checked && "translate-x-4",
-          )}
-        />
-      </span>
+      <Switch on={checked} onChange={onChange} />
     </label>
   );
 }

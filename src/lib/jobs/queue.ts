@@ -102,12 +102,26 @@ export async function fail(job: Job, error: string): Promise<void> {
     .where(owned(job));
 }
 
-/** Jobs whose worker died mid-run go back to the queue. */
-export async function reapStale(maxRunMs = 30 * 60_000): Promise<void> {
+/** Keeps a running job's lock fresh (see reapStale). */
+export async function heartbeat(job: Job): Promise<void> {
+  await db().update(jobs).set({ lockedAt: Date.now() }).where(and(owned(job), eq(jobs.status, "running")));
+}
+
+/**
+ * Jobs whose worker died mid-run (no heartbeat for 5 minutes) go back to the queue. That counts as an attempt,
+ * so a job that keeps crashing its worker (e.g. running out of memory) eventually fails instead of looping forever.
+ */
+export async function reapStale(maxSilentMs = 5 * 60_000): Promise<void> {
+  const cutoff = Date.now() - maxSilentMs;
+  const stale = and(eq(jobs.status, "running"), lt(jobs.lockedAt, cutoff));
   await db()
     .update(jobs)
-    .set({ status: "queued", lockedAt: null, lockedBy: null })
-    .where(and(eq(jobs.status, "running"), lt(jobs.lockedAt, Date.now() - maxRunMs)));
+    .set({ status: "failed", lockedAt: null, lockedBy: null, finishedAt: Date.now(), lastError: "Worker stopped responding too many times" })
+    .where(and(stale, sql`${jobs.attempts} + 1 >= ${jobs.maxAttempts}`));
+  await db()
+    .update(jobs)
+    .set({ status: "queued", lockedAt: null, lockedBy: null, attempts: sql`${jobs.attempts} + 1` })
+    .where(stale);
 }
 
 export async function pruneFinished(olderThanMs = 14 * 86_400_000): Promise<void> {

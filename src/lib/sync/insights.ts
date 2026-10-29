@@ -1,10 +1,10 @@
 import "server-only";
-import { and, between, eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { db } from "@/lib/db";
 import { adAccounts, adsets, insightsDaily } from "@/lib/db/schema";
 import { addDays, todayIn } from "@/lib/dates";
-import { EVENT_ACTION_TYPES, pickAction, sumActions, toActionMap, VIDEO_ACTION_KEYS, VIDEO_FIELDS, type ActionList } from "@/lib/meta/actions";
+import { EVENT_ACTION_TYPES, GOAL_ACTION_TYPES, pickAction, sumActions, toActionMap, VIDEO_ACTION_KEYS, VIDEO_FIELDS, type ActionList } from "@/lib/meta/actions";
 import { graph, graphAll } from "@/lib/meta/client";
 import type { HandlerResult } from "@/lib/jobs/types";
 
@@ -73,13 +73,14 @@ export async function runInsightsJob(p: InsightsPayload): Promise<HandlerResult>
     return { retryInMs: 5_000, payload: { ...p, since, until, reportRunId: res.report_run_id, startedAt: Date.now() } };
   }
 
-  const status = await graph<{ async_status: string; async_percent_completion: number }>(p.reportRunId, {
+  const status = await graph<{ async_status: string; async_percent_completion: number; error_code?: number; error_subcode?: number; error_message?: string }>(p.reportRunId, {
     ...opts,
-    params: { fields: "async_status,async_percent_completion" },
+    params: { fields: "async_status,async_percent_completion,error_code,error_subcode,error_message" },
   });
 
   if (status.async_status === "Job Completed") {
-    const rows = await graphAll<Row>(`${p.reportRunId}/insights`, { ...opts, params: { limit: 500 } });
+    // Up to 1M rows (2,000 pages); a bigger account would need shorter report windows.
+    const rows = await graphAll<Row>(`${p.reportRunId}/insights`, { ...opts, params: { limit: 500 }, maxPages: 2000 });
     await ingest(account.id, p.since!, p.until!, rows);
     const now = Date.now();
     await db()
@@ -95,22 +96,29 @@ export async function runInsightsJob(p: InsightsPayload): Promise<HandlerResult>
 
   const stuck = Date.now() - (p.startedAt ?? 0) > REPORT_TIMEOUT_MS;
   if (status.async_status === "Job Failed" || status.async_status === "Job Skipped" || stuck) {
+    const why = status.error_message ? `${status.error_message} (code ${status.error_code}${status.error_subcode ? `/${status.error_subcode}` : ""})` : status.async_status;
+    // "Report too large" won't succeed on a retry (Meta says to split the range or fields).
+    if (status.error_subcode === 1504045) throw new Error(`Insights report too large for one run: ${why}`);
     const restarts = (p.restarts ?? 0) + 1;
-    if (restarts > 3) throw new Error(`Insights report ${p.reportRunId} failed: ${status.async_status}`);
-    return { retryInMs: 60_000 * restarts, payload: { ...p, reportRunId: undefined, restarts } };
+    if (restarts > 3) throw new Error(`Insights report ${p.reportRunId} failed: ${why}`);
+    return { retryInMs: 60_000 * restarts, payload: { ...p, reportRunId: undefined, restarts }, note: why };
   }
   return { retryInMs: status.async_percent_completion >= 50 ? 3_000 : 8_000 };
 }
 
 async function ingest(adAccountId: string, since: string, until: string, rows: Row[]) {
-  // Result definition follows each ad set's optimisation event, like Ads Manager's "Results".
+  // Result definition follows each ad set's optimisation event (or, without one, its goal: leads, conversations…),
+  // like Ads Manager's "Results"; anything else counts link clicks.
   const events = new Map(
     (
       await db()
-        .select({ id: adsets.id, promotedObject: adsets.promotedObject })
+        .select({ id: adsets.id, promotedObject: adsets.promotedObject, goal: adsets.optimizationGoal })
         .from(adsets)
         .where(eq(adsets.adAccountId, adAccountId))
-    ).map((s) => [s.id, (s.promotedObject?.custom_event_type as string | undefined) ?? null]),
+    ).map((s) => {
+      const event = s.promotedObject?.custom_event_type as string | undefined;
+      return [s.id, event && EVENT_ACTION_TYPES[event] ? event : s.goal && GOAL_ACTION_TYPES[s.goal] ? s.goal : null];
+    }),
   );
   const now = Date.now();
   const values = rows.map((r) => {
@@ -133,7 +141,7 @@ async function ingest(adAccountId: string, since: string, until: string, rows: R
       impressions: Number(r.impressions ?? 0),
       clicks: Number(r.clicks ?? 0),
       linkClicks,
-      results: event ? pickAction(actions, EVENT_ACTION_TYPES[event]) : linkClicks,
+      results: event ? pickAction(actions, EVENT_ACTION_TYPES[event] ?? GOAL_ACTION_TYPES[event]) : linkClicks,
       resultType: event ?? "LINK_CLICKS",
       purchases,
       purchaseValue: pickAction(values, EVENT_ACTION_TYPES.PURCHASE),
@@ -143,34 +151,35 @@ async function ingest(adAccountId: string, since: string, until: string, rows: R
     };
   });
 
-  // Replace the whole window atomically: ads with no delivery on a day simply have no row.
-  const statements: BatchItem<"sqlite">[] = [
-    db()
-      .delete(insightsDaily)
-      .where(and(eq(insightsDaily.adAccountId, adAccountId), between(insightsDaily.date, since, until))),
-  ];
-  for (let i = 0; i < values.length; i += 200) {
-    statements.push(
-      db()
-        .insert(insightsDaily)
-        .values(values.slice(i, i + 200))
-        .onConflictDoUpdate({
-          target: [insightsDaily.adId, insightsDaily.date],
-          set: {
-            spend: sql`excluded.spend`,
-            impressions: sql`excluded.impressions`,
-            clicks: sql`excluded.clicks`,
-            linkClicks: sql`excluded.link_clicks`,
-            results: sql`excluded.results`,
-            resultType: sql`excluded.result_type`,
-            purchases: sql`excluded.purchases`,
-            purchaseValue: sql`excluded.purchase_value`,
-            leads: sql`excluded.leads`,
-            actions: sql`excluded.actions`,
-            syncedAt: sql`excluded.synced_at`,
-          },
-        }),
-    );
+  // Replace the window one day at a time, each day atomically (ads with no delivery on a day simply have no row).
+  // Per-day batches keep each request and transaction small on Turso instead of one huge write for the window.
+  const byDate = new Map<string, typeof values>();
+  for (const v of values) {
+    const list = byDate.get(v.date);
+    if (list) list.push(v);
+    else byDate.set(v.date, [v]);
   }
-  await db().batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+  for (let day = since; day <= until; day = addDays(day, 1)) {
+    const rows = byDate.get(day) ?? [];
+    const statements: BatchItem<"sqlite">[] = [db().delete(insightsDaily).where(and(eq(insightsDaily.adAccountId, adAccountId), eq(insightsDaily.date, day)))];
+    for (let i = 0; i < rows.length; i += 200) statements.push(db().insert(insightsDaily).values(rows.slice(i, i + 200)).onConflictDoUpdate(UPSERT));
+    await db().batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+  }
 }
+
+const UPSERT = {
+  target: [insightsDaily.adId, insightsDaily.date],
+  set: {
+    spend: sql`excluded.spend`,
+    impressions: sql`excluded.impressions`,
+    clicks: sql`excluded.clicks`,
+    linkClicks: sql`excluded.link_clicks`,
+    results: sql`excluded.results`,
+    resultType: sql`excluded.result_type`,
+    purchases: sql`excluded.purchases`,
+    purchaseValue: sql`excluded.purchase_value`,
+    leads: sql`excluded.leads`,
+    actions: sql`excluded.actions`,
+    syncedAt: sql`excluded.synced_at`,
+  },
+};

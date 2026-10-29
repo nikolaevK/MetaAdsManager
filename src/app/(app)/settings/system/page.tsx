@@ -77,7 +77,7 @@ async function System() {
 
       <section className="flex flex-col gap-4">
         <SubsectionHeader icon={Activity} title="Connection health" description="Credentials and endpoints this deployment uses to talk to Meta." />
-        <div className="grid gap-3 @xl:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 @xl:grid-cols-2">
           <HealthCard
             icon={KeyRound}
             title="Meta access token"
@@ -120,7 +120,7 @@ async function System() {
 
         <Card>
           <CardHeader icon={Plug} title="Setup" description="Wire Meta webhooks and the scheduler to this deployment." />
-          <div className="grid gap-6 p-5 @3xl:grid-cols-2">
+          <div className="grid grid-cols-1 gap-6 p-5 @3xl:grid-cols-2">
             <SetupStep n={1} title="Ad review webhooks">
               <p>
                 In your Meta app, add the Webhooks product, choose the <b className="font-medium text-ink">Ad Account</b> object and subscribe to{" "}
@@ -155,7 +155,7 @@ async function System() {
               {data.limits.map((l) => {
                 const blocked = isFuture(l.blockedUntil);
                 return (
-                  <li key={l.key} className="grid gap-x-6 gap-y-2 px-5 py-3.5 @2xl:grid-cols-[minmax(0,1fr)_minmax(0,14rem)_auto] @2xl:items-center">
+                  <li key={l.key} className="grid grid-cols-1 gap-x-6 gap-y-2 px-5 py-3.5 @2xl:grid-cols-[minmax(0,1fr)_minmax(0,14rem)_auto] @2xl:items-center">
                     <div className="min-w-0">
                       <p className="truncate font-mono text-[12.5px] text-ink" title={l.key}>
                         {l.key}

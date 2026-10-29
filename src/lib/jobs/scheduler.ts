@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq, gt } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { adAccounts, jobs } from "@/lib/db/schema";
 import { env } from "@/lib/env";
@@ -14,7 +14,7 @@ export const SYNC_INTERVALS = {
   insightsFull: 24 * 60 * MIN,
 };
 
-const g = globalThis as unknown as { __lastSchedule?: number };
+const g = globalThis as unknown as { __lastSchedule?: number; __lastPrune?: number };
 const FAILURE_BACKOFF_MS = 15 * MIN;
 
 const due = (last: number | null, every: number, now: number) => !last || now - last >= every;
@@ -44,8 +44,17 @@ export async function scheduleRecurring(force = false): Promise<void> {
         .where(and(eq(jobs.status, "failed"), gt(jobs.finishedAt, now - FAILURE_BACKOFF_MS)))
     ).map((r) => r.key),
   );
+  // Jobs already queued or running for a key would be deduped anyway; skipping them saves a write per account per tick.
+  const active = new Set(
+    (
+      await db()
+        .select({ key: jobs.dedupeKey })
+        .from(jobs)
+        .where(and(inArray(jobs.status, ["queued", "running"]), isNotNull(jobs.dedupeKey)))
+    ).map((r) => r.key),
+  );
   const enqueue = (type: Parameters<typeof enqueueJob>[0], payload: Record<string, unknown>, opts: Parameters<typeof enqueueJob>[2]) =>
-    opts?.dedupeKey && failedRecently.has(opts.dedupeKey) ? Promise.resolve() : enqueueJob(type, payload, opts);
+    opts?.dedupeKey && (failedRecently.has(opts.dedupeKey) || active.has(opts.dedupeKey)) ? Promise.resolve() : enqueueJob(type, payload, opts);
 
   const accounts = await db().select().from(adAccounts);
   for (const a of accounts) {
@@ -77,5 +86,9 @@ export async function scheduleRecurring(force = false): Promise<void> {
       });
     }
   }
-  await pruneFinished();
+  // Old finished jobs only need clearing out now and then.
+  if (now - (g.__lastPrune ?? 0) > 60 * MIN) {
+    g.__lastPrune = now;
+    await pruneFinished();
+  }
 }

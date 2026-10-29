@@ -2,7 +2,7 @@ import "server-only";
 import { and, eq, inArray } from "drizzle-orm";
 import { UserError } from "@/lib/action-result";
 import { db } from "@/lib/db";
-import { adAccounts, ads, adsets, launches, type LaunchStatus } from "@/lib/db/schema";
+import { adAccounts, ads, adsets, launchObjects, launches, type LaunchStatus } from "@/lib/db/schema";
 import { TABLES, type Level } from "@/lib/meta/mutations";
 
 export type ConnectedAccount = typeof adAccounts.$inferSelect;
@@ -34,22 +34,28 @@ export async function connectedAccount(accountId: string): Promise<ConnectedAcco
 
 const NOT_APPROVED: LaunchStatus[] = ["queued", "building", "ready_for_review", "activating", "activation_failed", "rolling_back", "failed"];
 
-/** Objects created by a launch go live only through its approval flow, never via a manual toggle. */
+/**
+ * What an admin approves must be what goes live. Until its launch is approved, an object a launch created, and
+ * anything inside it, can't be switched on, edited, duplicated or added to; switching it off is always allowed
+ * (callers skip this check for PAUSED / ARCHIVED). Existing campaigns and ad sets a launch only adds to aren't
+ * locked: the launch's own new objects are.
+ */
 export async function assertNotAwaitingApproval(lvl: Level, ids: string[]) {
-  const campaignIds =
-    lvl === "campaign"
-      ? ids
-      : (
-          await db()
-            .selectDistinct({ id: (lvl === "adset" ? adsets : ads).campaignId })
-            .from(lvl === "adset" ? adsets : ads)
-            .where(inArray((lvl === "adset" ? adsets : ads).id, ids))
-        ).map((r) => r.id);
-  if (campaignIds.length === 0) return;
+  if (ids.length === 0) return;
+  // Meta ids are unique across object types, so the object and its ancestors are matched in one list.
+  const related = new Set(ids);
+  if (lvl === "ad") {
+    const rows = await db().select({ adsetId: ads.adsetId, campaignId: ads.campaignId }).from(ads).where(inArray(ads.id, ids));
+    for (const r of rows) related.add(r.adsetId).add(r.campaignId);
+  } else if (lvl === "adset") {
+    const rows = await db().select({ campaignId: adsets.campaignId }).from(adsets).where(inArray(adsets.id, ids));
+    for (const r of rows) related.add(r.campaignId);
+  }
   const [pending] = await db()
     .select({ name: launches.name })
-    .from(launches)
-    .where(and(inArray(launches.metaCampaignId, campaignIds), inArray(launches.status, NOT_APPROVED)))
+    .from(launchObjects)
+    .innerJoin(launches, eq(launches.id, launchObjects.launchId))
+    .where(and(inArray(launchObjects.metaId, [...related]), inArray(launches.status, NOT_APPROVED)))
     .limit(1);
-  if (pending) throw new UserError(`"${pending.name}" belongs to a launch that hasn't been approved. Approve it from Launches.`);
+  if (pending) throw new UserError(`This is part of the launch "${pending.name}", which is waiting for approval. Approve or discard it on Launches first.`);
 }

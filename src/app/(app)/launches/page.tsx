@@ -75,7 +75,7 @@ async function Launches({ searchParams }: { searchParams: PageProps<"/launches">
                 <div className="min-w-0 flex-1">
                   <Link
                     href={`/launches/new?draft=${d.id}`}
-                    className="block truncate text-[13.5px] font-medium outline-none after:absolute after:inset-0 after:content-[''] hover:text-primary focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-primary/50"
+                    className="block truncate text-[13.5px] font-medium outline-none after:absolute after:inset-0 after:content-[''] hover:text-primary-ink focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-primary/50"
                   >
                     {d.name}
                   </Link>
@@ -134,8 +134,8 @@ async function Launches({ searchParams }: { searchParams: PageProps<"/launches">
               </span>
             </div>
 
-            {/* Desktop: dense table */}
-            <div className="hidden overflow-x-auto md:block">
+            {/* Desktop: dense table. `relative` keeps the sr-only header (absolutely positioned) inside the scroller. */}
+            <div className="relative hidden overflow-x-auto md:block">
               <table className="w-full text-[13px]">
                 <thead>
                   <tr className="border-b border-line bg-surface-2 text-left text-[12px] text-muted">
@@ -230,7 +230,7 @@ function RowLink({ id, name }: { id: string; name: string }) {
     <Link
       href={`/launches/${id}`}
       title={name}
-      className="block truncate text-[13.5px] font-medium text-ink outline-none transition-colors after:absolute after:inset-0 after:content-[''] hover:text-primary focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-primary/50"
+      className="block truncate text-[13.5px] font-medium text-ink outline-none transition-colors after:absolute after:inset-0 after:content-[''] hover:text-primary-ink focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-primary/50"
     >
       {name}
     </Link>

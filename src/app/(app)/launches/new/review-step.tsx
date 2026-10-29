@@ -5,7 +5,7 @@ import { MediaThumb } from "@/app/(app)/library/media-thumb";
 import { Section } from "@/app/(app)/campaigns/editor/fields";
 import { Alert, Badge, cn } from "@/components/ui";
 import { formatMoney } from "@/lib/format";
-import { mediaPick, positiveNumber, resolveAdset, STEPS, type BuilderState } from "@/lib/launch/draft";
+import { mediaPick, positiveNumber, resolveAdset, STEPS, type BuilderState, type ParentView } from "@/lib/launch/draft";
 import { DESTINATION_LABELS, MESSAGING_APP_LABELS } from "@/lib/launch/objectives";
 import type { LaunchIssue } from "@/lib/launch/spec";
 import type { Asset } from "./media";
@@ -21,6 +21,7 @@ export const issueItem = (where: string) => {
 
 export function ReviewStep({
   state,
+  parent,
   names,
   issues,
   currency,
@@ -29,6 +30,7 @@ export function ReviewStep({
   onJump,
 }: {
   state: BuilderState;
+  parent: ParentView | null;
   names: { campaign: string; adsets: string[]; ads: string[] };
   issues: LaunchIssue[];
   currency: string;
@@ -52,7 +54,7 @@ export function ReviewStep({
                     {STEPS[STEP_INDEX[i.step]].label} · {i.where}:
                   </span>
                   <span>{i.message}</span>
-                  <ArrowRight className="size-3 shrink-0 self-center opacity-0 transition-opacity group-hover:opacity-100" aria-hidden />
+                  <ArrowRight className="size-3 shrink-0 self-center transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100" aria-hidden />
                 </button>
               </li>
             ))}
@@ -64,15 +66,20 @@ export function ReviewStep({
         </Alert>
       )}
 
-      <Section title="Campaign" icon={Megaphone}>
-        <dl className="grid gap-x-6 gap-y-3 text-[13px] sm:grid-cols-2">
+      <Section title={parent ? "Existing campaign" : "Campaign"} icon={Megaphone} description={parent ? "Its settings don't change. Everything below is new." : undefined}>
+        <dl className="grid grid-cols-1 gap-x-6 gap-y-3 text-[13px] sm:grid-cols-2">
           <Row label="Name">{names.campaign || "—"}</Row>
           <Row label="Objective">{OBJECTIVE_LABELS[c.objective]}</Row>
           <Row label="Budget">
             {cbo ? `${money(c.budget)} ${c.budgetSchedule} · Campaign budget (CBO)` : `${c.budgetSchedule === "daily" ? "Daily" : "Lifetime"} per ad set · Ad set budgets (ABO)`}
           </Row>
           <Row label="Bid strategy">{BID_STRATEGY_LABELS[c.bidStrategy]}</Row>
-          <Row label="Schedule">{c.start ? c.start.replace("T", " ") : "On approval"}{c.end ? ` → ${c.end.replace("T", " ")}` : ""}</Row>
+          {parent?.target.mode !== "adset" && (
+            <Row label={parent ? "New ad sets run" : "Schedule"}>
+              {c.start ? c.start.replace("T", " ") : "On approval"}
+              {c.end ? ` → ${c.end.replace("T", " ")}` : ""}
+            </Row>
+          )}
           <Row label="Identity">
             {pageName ?? (state.pageId ? `Page ${state.pageId}` : "—")}
             {state.igId ? ` · Instagram ${state.igId}` : ""}
@@ -82,7 +89,7 @@ export function ReviewStep({
         </dl>
       </Section>
 
-      <Section title={`Ad sets (${state.adsets.length})`} icon={Layers}>
+      <Section title={parent?.target.mode === "adset" ? "Existing ad set" : `${parent ? "New ad sets" : "Ad sets"} (${state.adsets.length})`} icon={Layers}>
         <ul className="divide-y divide-line-soft rounded-lg border border-line">
           {state.adsets.map((s, j) => {
             const r = resolveAdset(c.objective, s);

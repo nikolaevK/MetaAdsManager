@@ -1,33 +1,41 @@
 import "server-only";
-import { eq } from "drizzle-orm";
+import { inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { loginAttempts } from "@/lib/db/schema";
 
 const WINDOW_MS = 15 * 60 * 1000;
-const MAX_FAILURES = 5;
 const LOCK_MS = 15 * 60 * 1000;
 
-/** Returns ms until the key is unlocked, or 0 if login may be attempted. */
-export async function lockedFor(key: string): Promise<number> {
-  const [row] = await db().select().from(loginAttempts).where(eq(loginAttempts.key, key)).limit(1);
-  if (!row?.lockedUntil) return 0;
-  return Math.max(0, row.lockedUntil - Date.now());
-}
-
-export async function recordFailure(key: string): Promise<void> {
+/**
+ * Counts a sign-in attempt against each key before the password is checked, with one atomic upsert per key, so
+ * parallel attempts can't all read "not locked yet". Returns ms until every key allows another attempt (0 = go).
+ * A successful sign-in clears its keys with clearFailures.
+ */
+export async function reserveAttempt(limits: { key: string; max: number }[]): Promise<number> {
   const now = Date.now();
-  const [row] = await db().select().from(loginAttempts).where(eq(loginAttempts.key, key)).limit(1);
-  const fresh = !row || now - row.firstAt > WINDOW_MS;
-  const count = fresh ? 1 : row.count + 1;
-  const values = {
-    key,
-    count,
-    firstAt: fresh ? now : row.firstAt,
-    lockedUntil: count >= MAX_FAILURES ? now + LOCK_MS : null,
-  };
-  await db().insert(loginAttempts).values(values).onConflictDoUpdate({ target: loginAttempts.key, set: values });
+  const expired = now - WINDOW_MS;
+  let wait = 0;
+  for (const { key, max } of limits) {
+    const [row] = await db()
+      .insert(loginAttempts)
+      .values({ key, count: 1, firstAt: now, lockedUntil: null })
+      .onConflictDoUpdate({
+        target: loginAttempts.key,
+        set: {
+          count: sql`case when ${loginAttempts.firstAt} < ${expired} then 1 else ${loginAttempts.count} + 1 end`,
+          firstAt: sql`case when ${loginAttempts.firstAt} < ${expired} then ${now} else ${loginAttempts.firstAt} end`,
+        },
+      })
+      .returning();
+    if (row.lockedUntil && row.lockedUntil > now) wait = Math.max(wait, row.lockedUntil - now);
+    else if (row.count > max) {
+      await db().update(loginAttempts).set({ lockedUntil: now + LOCK_MS }).where(inArray(loginAttempts.key, [key]));
+      wait = Math.max(wait, LOCK_MS);
+    }
+  }
+  return wait;
 }
 
-export async function clearFailures(key: string): Promise<void> {
-  await db().delete(loginAttempts).where(eq(loginAttempts.key, key));
+export async function clearFailures(keys: string[]): Promise<void> {
+  await db().delete(loginAttempts).where(inArray(loginAttempts.key, keys));
 }

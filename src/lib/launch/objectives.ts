@@ -14,7 +14,7 @@ export const LAUNCH_OBJECTIVES = [
 ] as const;
 export type LaunchObjective = (typeof LAUNCH_OBJECTIVES)[number];
 
-export const DESTINATIONS = ["website", "messaging", "app", "on_ad"] as const;
+export const DESTINATIONS = ["website", "messaging", "app", "on_ad", "instant_form"] as const;
 export type Destination = (typeof DESTINATIONS)[number];
 
 export const MESSAGING_APPS = ["MESSENGER", "INSTAGRAM_DIRECT", "WHATSAPP"] as const;
@@ -25,6 +25,7 @@ export const DESTINATION_LABELS: Record<Destination, string> = {
   messaging: "Messaging apps",
   app: "App",
   on_ad: "On your ad",
+  instant_form: "Instant forms",
 };
 
 export const MESSAGING_APP_LABELS: Record<MessagingApp, string> = { MESSENGER: "Messenger", INSTAGRAM_DIRECT: "Instagram", WHATSAPP: "WhatsApp" };
@@ -34,7 +35,7 @@ export const OBJECTIVE_DESTINATIONS: Record<LaunchObjective, Destination[]> = {
   OUTCOME_AWARENESS: ["website"],
   OUTCOME_TRAFFIC: ["website", "messaging"],
   OUTCOME_ENGAGEMENT: ["messaging", "on_ad", "website"],
-  OUTCOME_LEADS: ["website"],
+  OUTCOME_LEADS: ["website", "instant_form", "messaging"],
   OUTCOME_APP_PROMOTION: ["app"],
   OUTCOME_SALES: ["website", "messaging"],
 };
@@ -43,12 +44,18 @@ export const OBJECTIVE_DESTINATIONS: Record<LaunchObjective, Destination[]> = {
 export function goalsFor(objective: LaunchObjective, destination: Destination, apps: readonly MessagingApp[]): string[] {
   if (objective === "OUTCOME_AWARENESS") return ["REACH", "IMPRESSIONS", "AD_RECALL_LIFT", "THRUPLAY"];
   if (objective === "OUTCOME_APP_PROMOTION") return ["APP_INSTALLS", "LINK_CLICKS"];
+  // Conversion leads optimizes for the leads most likely to become customers (needs a CRM connected in Events Manager).
+  if (destination === "instant_form") return ["LEAD_GENERATION", "QUALITY_LEAD"];
   if (destination === "messaging") {
-    // Several apps in one ad set only optimize for conversations; one app can also buy link clicks.
-    if (objective === "OUTCOME_TRAFFIC") return apps.length > 1 ? ["CONVERSATIONS"] : ["LINK_CLICKS", "REACH", "IMPRESSIONS"];
-    return objective === "OUTCOME_ENGAGEMENT" && apps.length === 1 ? ["CONVERSATIONS", "LINK_CLICKS"] : ["CONVERSATIONS"];
+    // Several apps in one ad set only optimize for conversations; one app has more goals per objective.
+    if (apps.length > 1) return ["CONVERSATIONS"];
+    if (objective === "OUTCOME_TRAFFIC") return ["CONVERSATIONS", "LINK_CLICKS", "REACH", "IMPRESSIONS"];
+    if (objective === "OUTCOME_SALES") return ["CONVERSATIONS", "OFFSITE_CONVERSIONS", "LINK_CLICKS", "REACH", "IMPRESSIONS"];
+    if (objective === "OUTCOME_ENGAGEMENT") return ["CONVERSATIONS", "LINK_CLICKS"];
+    return ["CONVERSATIONS"];
   }
-  if (destination === "on_ad") return ["POST_ENGAGEMENT", "THRUPLAY", "TWO_SECOND_CONTINUOUS_VIDEO_VIEWS", "REACH", "IMPRESSIONS"];
+  // Meta no longer optimizes "on your ad" posts for impressions (v20), nor for 2-second video views (gone from v26).
+  if (destination === "on_ad") return ["POST_ENGAGEMENT", "THRUPLAY", "REACH"];
   switch (objective) {
     case "OUTCOME_SALES":
       return ["OFFSITE_CONVERSIONS", "VALUE", "LANDING_PAGE_VIEWS", "LINK_CLICKS", "IMPRESSIONS", "REACH"];
@@ -70,8 +77,11 @@ export function pixelUse(objective: LaunchObjective, destination: Destination, g
     if (objective === "OUTCOME_ENGAGEMENT" && isConversionGoal(goal)) return "required";
     return "none";
   }
-  // Only Sales → Messenger conversations is documented with a pixel event in promoted_object.
-  if (destination === "messaging" && objective === "OUTCOME_SALES" && apps.length === 1 && apps[0] === "MESSENGER") return "optional";
+  if (destination === "messaging" && objective === "OUTCOME_SALES" && apps.length === 1) {
+    // Optimizing a chat ad for website conversions needs the pixel event; Messenger conversations may carry one.
+    if (goal === "OFFSITE_CONVERSIONS") return "required";
+    if (apps[0] === "MESSENGER") return "optional";
+  }
   return "none";
 }
 
@@ -81,6 +91,7 @@ export const VIDEO_GOALS = new Set(["THRUPLAY", "TWO_SECOND_CONTINUOUS_VIDEO_VIE
 /** Ad set destination_type; undefined = leave unset (Meta's "UNDEFINED"). */
 export function destinationType(objective: LaunchObjective, destination: Destination, apps: readonly MessagingApp[], goal = ""): string | undefined {
   if (destination === "website") return objective === "OUTCOME_AWARENESS" ? undefined : "WEBSITE";
+  if (destination === "instant_form") return "ON_AD";
   if (destination === "on_ad") return VIDEO_GOALS.has(goal) ? "ON_VIDEO" : "ON_POST";
   if (destination !== "messaging") return undefined;
   const has = new Set(apps);
@@ -97,8 +108,13 @@ export function destinationType(objective: LaunchObjective, destination: Destina
 }
 
 /** Where an existing ad set sends clicks, read back from its destination_type / promoted_object. */
-export function destinationFromAdset(destinationType: string | null | undefined, promoted: Record<string, unknown> | null | undefined): { kind: Destination; apps: MessagingApp[]; storeUrl?: string } {
+export function destinationFromAdset(
+  destinationType: string | null | undefined,
+  promoted: Record<string, unknown> | null | undefined,
+  goal?: string | null,
+): { kind: Destination; apps: MessagingApp[]; storeUrl?: string } {
   const dt = destinationType ?? "";
+  if (goal === "LEAD_GENERATION" || goal === "QUALITY_LEAD") return { kind: "instant_form", apps: [] };
   if (dt === "MESSENGER" || dt === "WHATSAPP" || dt === "INSTAGRAM_DIRECT" || dt.startsWith("MESSAGING_")) {
     const apps = MESSAGING_APPS.filter((a) => (a === "INSTAGRAM_DIRECT" ? dt.includes("INSTAGRAM_DIRECT") : dt.includes(a)));
     return { kind: "messaging", apps };
@@ -114,8 +130,12 @@ export const MESSAGING_CTA: Record<MessagingApp, { type: string; link: string }>
   WHATSAPP: { type: "WHATSAPP_MESSAGE", link: "https://api.whatsapp.com/send" },
 };
 
-/** Ads in website, "on your ad" and Awareness ad sets link to a website; messaging and app ads don't need one. */
+/** Ads in website, "on your ad" and Awareness ad sets link to a website; messaging, app and instant-form ads don't need one. */
 export const needsWebsite = (destination: Destination) => destination === "website" || destination === "on_ad";
+
+/** Calls to action Meta allows on instant-form ads (first = default). The form opens on Facebook / Instagram. */
+export const LEAD_CTAS = ["SIGN_UP", "APPLY_NOW", "GET_QUOTE", "LEARN_MORE", "SUBSCRIBE", "DOWNLOAD"] as const;
+export const LEAD_FORM_LINK = "https://fb.me/";
 
 /** Calls to action offered per destination (first = default). */
 export const WEBSITE_CTAS = [

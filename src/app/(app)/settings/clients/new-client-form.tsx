@@ -13,7 +13,7 @@ export function NewClientForm() {
 
   if (!open) {
     return (
-      <Button variant="create" onClick={() => setOpen(true)}>
+      <Button variant="primary" onClick={() => setOpen(true)}>
         <Plus /> New client
       </Button>
     );

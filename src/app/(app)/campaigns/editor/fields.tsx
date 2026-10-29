@@ -2,28 +2,15 @@
 
 import { LoaderCircle, Search, X, type LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { cn, Input } from "@/components/ui";
+import { Card, CardHeader, cn, focusRing, Input, Segmented, segmentClass } from "@/components/ui";
 
-/** Titled block inside the editor sheet. */
-export function Section({ title, description, icon: Icon, children, actions }: { title: string; description?: ReactNode; icon?: LucideIcon; children: ReactNode; actions?: ReactNode }) {
+/** Titled block inside the editor sheet and the campaign builder: the settings Card, in its dense size. */
+export function Section({ title, description, icon, children, actions }: { title: string; description?: ReactNode; icon?: LucideIcon; children: ReactNode; actions?: ReactNode }) {
   return (
-    <section className="rounded-xl border border-line bg-surface">
-      <header className="flex items-start justify-between gap-3 border-b border-line-soft px-4 py-3">
-        <div className="flex min-w-0 items-start gap-2.5">
-          {Icon && (
-            <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-surface-2 text-muted ring-1 ring-inset ring-line">
-              <Icon className="size-3.5" aria-hidden />
-            </span>
-          )}
-          <div className="min-w-0">
-            <h3 className="text-[13.5px] font-semibold tracking-tight">{title}</h3>
-            {description && <p className="mt-0.5 text-[12.5px] text-muted">{description}</p>}
-          </div>
-        </div>
-        {actions}
-      </header>
+    <Card>
+      <CardHeader dense as="h3" icon={icon} title={title} description={description} actions={actions} />
       <div className="flex flex-col gap-4 p-4">{children}</div>
-    </section>
+    </Card>
   );
 }
 
@@ -51,7 +38,8 @@ export function MoneyInput({ value, onChange, currency, id, disabled, placeholde
   );
 }
 
-export function Switch({ on, onChange, label, disabled }: { on: boolean; onChange: (on: boolean) => void; label: string; disabled?: boolean }) {
+/** On/off switch. Without `label`, a wrapping <label> names it (and its whole row becomes the hit target). */
+export function Switch({ on, onChange, label, disabled }: { on: boolean; onChange: (on: boolean) => void; label?: string; disabled?: boolean }) {
   return (
     <button
       type="button"
@@ -62,19 +50,23 @@ export function Switch({ on, onChange, label, disabled }: { on: boolean; onChang
       onClick={() => onChange(!on)}
       className={cn(
         "relative flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 transition-colors duration-150",
-        "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-60",
+        // Same look on touch screens, with a 44×40 hit area around the 36×20 track.
+        "pointer-coarse:after:absolute pointer-coarse:after:-inset-x-1 pointer-coarse:after:-inset-y-2.5",
+        focusRing,
+        "disabled:cursor-not-allowed disabled:opacity-60",
         on ? "bg-primary" : "bg-[color-mix(in_oklab,var(--faint)_45%,var(--line))]",
       )}
     >
+      {/* The knob stays light in both themes, like a physical switch. */}
       <span className={cn("size-4 rounded-full bg-surface shadow-card transition-transform duration-150 dark:bg-ink", on && "translate-x-4")} />
     </button>
   );
 }
 
-/** Pill segmented control bound to a value. */
+/** Pill segmented control bound to a value (the shared Segmented styles, as a radio group). */
 export function Choice<T extends string>({ value, options, onChange, disabled, label }: { value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; disabled?: boolean; label: string }) {
   return (
-    <div role="radiogroup" aria-label={label} className="inline-flex w-fit flex-wrap items-center gap-0.5 rounded-xl border border-line bg-surface-2 p-0.5">
+    <Segmented role="radiogroup" aria-label={label} className="w-fit flex-wrap">
       {options.map((o) => (
         <button
           key={o.value}
@@ -83,15 +75,12 @@ export function Choice<T extends string>({ value, options, onChange, disabled, l
           aria-checked={value === o.value}
           disabled={disabled}
           onClick={() => onChange(o.value)}
-          className={cn(
-            "h-8 rounded-[10px] px-3 text-[13px] font-medium transition-colors disabled:opacity-60",
-            value === o.value ? "bg-surface text-ink shadow-card ring-1 ring-line" : "text-muted hover:text-ink",
-          )}
+          className={cn(segmentClass(value === o.value), "disabled:opacity-60")}
         >
           {o.label}
         </button>
       ))}
-    </div>
+    </Segmented>
   );
 }
 
@@ -107,7 +96,16 @@ export function Chip({ children, onRemove, tone = "default", title }: { children
     >
       <span className="min-w-0 truncate">{children}</span>
       {onRemove && (
-        <button type="button" onClick={onRemove} aria-label="Remove" className="grid size-5 shrink-0 place-items-center rounded-md opacity-70 transition hover:bg-black/5 hover:opacity-100 dark:hover:bg-white/10">
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label="Remove"
+          className={cn(
+            "relative grid size-5 shrink-0 place-items-center rounded-md opacity-70 transition hover:bg-hover hover:opacity-100",
+            "pointer-coarse:after:absolute pointer-coarse:after:-inset-x-1.5 pointer-coarse:after:-inset-y-2.5",
+            focusRing,
+          )}
+        >
           <X className="size-3" />
         </button>
       )}
@@ -210,7 +208,11 @@ export function SearchPicker<T>({
           } else if (e.key === "Enter" && visible[active]) {
             e.preventDefault();
             pick(visible[active]);
-          } else if (e.key === "Escape") setOpen(false);
+          } else if (e.key === "Escape" && open) {
+            // Handled here, so a dialog around the picker stays open.
+            e.preventDefault();
+            setOpen(false);
+          }
         }}
         className="h-9 w-full rounded-lg border border-line bg-surface pl-8 pr-8 text-[13px] shadow-xs placeholder:text-faint focus:border-primary focus:outline-none focus:ring-4 focus:ring-[var(--ring)] disabled:bg-surface-2"
       />

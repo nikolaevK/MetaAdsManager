@@ -2,15 +2,16 @@
 
 import { CalendarClock, Heart, Megaphone, MousePointerClick, PiggyBank, RotateCcw, ShoppingBag, Smartphone, UserPlus, UserRound, WandSparkles, type LucideIcon } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
-import type { PageOption } from "@/app/(app)/lookups";
-import { Choice, MoneyInput, Section } from "@/app/(app)/campaigns/editor/fields";
+import { useEffect, useState } from "react";
+import { lookupInstagramAccounts, type InstagramOption, type PageOption } from "@/app/(app)/lookups";
+import { Choice, MoneyInput, Section, Switch } from "@/app/(app)/campaigns/editor/fields";
 import { Button, cn, Field, Input, Select } from "@/components/ui";
-import type { BuilderState, CampaignDraft } from "@/lib/launch/draft";
+import type { BuilderState, CampaignDraft, ParentView } from "@/lib/launch/draft";
 import { LAUNCH_OBJECTIVES, type LaunchObjective } from "@/lib/launch/objectives";
 import type { TemplateConfig } from "@/lib/launch/spec";
 import { BID_STRATEGIES, SPECIAL_AD_CATEGORIES, type BidStrategy } from "@/lib/meta/editor-types";
 import { BID_STRATEGY_LABELS, OBJECTIVE_LABELS } from "@/lib/meta/labels";
+import { ParentCampaignCard } from "./parent-cards";
 
 const OBJECTIVE_CARDS: Record<LaunchObjective, { icon: LucideIcon; body: string }> = {
   OUTCOME_AWARENESS: { icon: Megaphone, body: "Show ads to people most likely to remember them." },
@@ -56,6 +57,8 @@ export function CampaignStep({
   setState,
   setCampaign,
   onTemplate,
+  parent,
+  accountId,
 }: {
   state: BuilderState;
   campaignName: string;
@@ -69,9 +72,13 @@ export function CampaignStep({
   setState: (patch: Partial<BuilderState>) => void;
   setCampaign: (patch: Partial<CampaignDraft>) => void;
   onTemplate: (id: string) => void;
+  /** Set when the launch adds to an existing campaign / ad set. */
+  parent: ParentView | null;
+  accountId: string;
 }) {
   const c = state.campaign;
   const cbo = c.budgetLevel === "campaign";
+  const mode = parent?.target.mode ?? "new";
   const lifetime = c.budgetSchedule === "lifetime";
   const page = pages?.find((p) => p.id === state.pageId);
   const [typing, setTyping] = useState(false);
@@ -80,37 +87,39 @@ export function CampaignStep({
   return (
     <div className="flex flex-col gap-4">
       <Section title="Identity" icon={UserRound} description="Where the campaign starts from and who the ads run as.">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field
-            label="Start from a template"
-            htmlFor="template"
-            hint={
-              invalidTemplates.length ? (
-                <span>
-                  Incomplete:{" "}
-                  {invalidTemplates.map((t, k) => (
-                    <span key={t.id}>
-                      {k > 0 && ", "}
-                      <Link href={`/settings/templates/${t.id}`} className="font-semibold text-primary hover:underline">
-                        {t.name}
-                      </Link>
-                    </span>
-                  ))}
-                </span>
-              ) : (
-                "Pre-fills objective, budget, pixel, audience, placements and enhancements. Everything stays editable."
-              )
-            }
-          >
-            <Select id="template" value={state.templateId} onChange={(e) => onTemplate(e.target.value)}>
-              <option value="">No template</option>
-              {templates.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {mode !== "adset" && (
+            <Field
+              label="Start from a template"
+              htmlFor="template"
+              hint={
+                invalidTemplates.length ? (
+                  <span>
+                    Incomplete:{" "}
+                    {invalidTemplates.map((t, k) => (
+                      <span key={t.id}>
+                        {k > 0 && ", "}
+                        <Link href={`/settings/templates/${t.id}`} className="font-semibold text-primary-ink hover:underline">
+                          {t.name}
+                        </Link>
+                      </span>
+                    ))}
+                  </span>
+                ) : (
+                  "Pre-fills objective, budget, pixel, audience, placements and enhancements. Everything stays editable."
+                )
+              }
+            >
+              <Select id="template" value={state.templateId} onChange={(e) => onTemplate(e.target.value)}>
+                <option value="">No template</option>
+                {templates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
           <Field label="Launch label" htmlFor="label" hint="Fills the {label} token in names, e.g. an angle or offer.">
             <Input id="label" value={state.label} onChange={(e) => setState({ label: e.target.value })} placeholder="e.g. Winter Promo" maxLength={80} />
           </Field>
@@ -118,7 +127,7 @@ export function CampaignStep({
             label={
               <span className="flex items-center justify-between gap-2">
                 Facebook Page
-                <button type="button" onClick={onReloadPages} className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
+                <button type="button" onClick={onReloadPages} className="inline-flex items-center gap-1 text-xs font-medium text-primary-ink hover:underline">
                   <RotateCcw className="size-3" aria-hidden /> Reload
                 </button>
               </span>
@@ -176,144 +185,234 @@ export function CampaignStep({
               />
             )}
           </Field>
-          <Field
-            label="Instagram account"
-            htmlFor="ig"
-            hint={page && !page.instagram ? "This Page has no linked Instagram account; Instagram placements will use the Page." : "Filled from the Page's linked Instagram account."}
-          >
-            <Input id="ig" value={state.igId} onChange={(e) => setState({ igId: e.target.value.replace(/\D/g, "") })} placeholder="Instagram account ID (optional)" inputMode="numeric" />
-          </Field>
+          <InstagramField accountId={accountId} page={page} value={state.igId} onChange={(igId) => setState({ igId })} />
         </div>
       </Section>
 
-      <Section title="Campaign" icon={Megaphone} description="The objective decides which conversion locations and goals the ad sets can use.">
-        <NameField id="campaign-name" label="Campaign name" value={campaignName} edited={c.nameEdited} onChange={(name) => setCampaign({ name, nameEdited: true })} onReset={() => setCampaign({ nameEdited: false })} />
-        <div role="radiogroup" aria-label="Objective" className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {LAUNCH_OBJECTIVES.map((o) => {
-            const { icon: Icon, body } = OBJECTIVE_CARDS[o];
-            const on = c.objective === o;
-            return (
+      {parent && <ParentCampaignCard parent={parent} currency={currency} />}
+
+      {!parent && (
+        <Section title="Campaign" icon={Megaphone} description="The objective decides which conversion locations and goals the ad sets can use.">
+          <NameField id="campaign-name" label="Campaign name" value={campaignName} edited={c.nameEdited} onChange={(name) => setCampaign({ name, nameEdited: true })} onReset={() => setCampaign({ nameEdited: false })} />
+          <div role="radiogroup" aria-label="Objective" className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {LAUNCH_OBJECTIVES.map((o) => {
+              const { icon: Icon, body } = OBJECTIVE_CARDS[o];
+              const on = c.objective === o;
+              return (
+                <button
+                  key={o}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  onClick={() => setCampaign({ objective: o, bidStrategy: o !== "OUTCOME_SALES" && c.bidStrategy === "LOWEST_COST_WITH_MIN_ROAS" ? "LOWEST_COST_WITHOUT_CAP" : c.bidStrategy })}
+                  className={cn("flex gap-3 rounded-xl border p-3 text-left transition-colors", on ? "border-primary bg-primary-soft/40 ring-4 ring-[var(--ring)]" : "border-line hover:bg-hover/60")}
+                >
+                  <span className={cn("grid size-8 shrink-0 place-items-center rounded-lg", on ? "bg-primary text-on-primary" : "bg-surface-2 text-muted ring-1 ring-inset ring-line")}>
+                    <Icon className="size-4" aria-hidden />
+                  </span>
+                  <span>
+                    <span className="block text-[13.5px] font-medium">{OBJECTIVE_LABELS[o]}</span>
+                    <span className="mt-0.5 block text-[12.5px] text-muted">{body}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <fieldset className="flex flex-col gap-2">
+            <legend className="mb-1 text-[13px] font-medium">Special ad categories</legend>
+            <p className="-mt-1 text-[12.5px] text-muted">Declare if ads are about credit, employment, housing, social issues or politics. Targeting options are limited for these.</p>
+            <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+              {SPECIAL_AD_CATEGORIES.map((cat) => (
+                <label key={cat} className="flex cursor-pointer items-center gap-2 text-[13px]">
+                  <input
+                    type="checkbox"
+                    checked={c.specialAdCategories.includes(cat)}
+                    onChange={() => setCampaign({ specialAdCategories: c.specialAdCategories.includes(cat) ? c.specialAdCategories.filter((x) => x !== cat) : [...c.specialAdCategories, cat] })}
+                    className="size-4 accent-primary"
+                  />
+                  {CATEGORY_LABEL[cat]}
+                </label>
+              ))}
+            </div>
+            {c.specialAdCategories.length > 0 && (
+              <Field label="Countries where the ads run" hint="Two-letter codes, comma separated." htmlFor="cats">
+                <Input id="cats" value={c.specialAdCountries} onChange={(e) => setCampaign({ specialAdCountries: e.target.value })} />
+              </Field>
+            )}
+          </fieldset>
+        </Section>
+      )}
+
+      {mode === "campaign" && !cbo && (
+        <Section title="New ad sets" icon={PiggyBank} description="This campaign has no campaign budget, so each new ad set gets its own budget (set on the Ad sets step) with this schedule and bid strategy.">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Budget schedule">
+              <Choice
+                label="Budget schedule"
+                value={c.budgetSchedule}
+                onChange={(v) => setCampaign({ budgetSchedule: v })}
+                options={[
+                  { value: "daily", label: "Daily" },
+                  { value: "lifetime", label: "Lifetime" },
+                ]}
+              />
+            </Field>
+            <Field label="Bid strategy" hint={BID_HELP[c.bidStrategy]} htmlFor="bid">
+              <Select id="bid" value={c.bidStrategy} onChange={(e) => setCampaign({ bidStrategy: e.target.value as BidStrategy })}>
+                {BID_STRATEGIES.filter((b) => b !== "LOWEST_COST_WITH_MIN_ROAS" || c.objective === "OUTCOME_SALES").map((b) => (
+                  <option key={b} value={b}>
+                    {BID_STRATEGY_LABELS[b]}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </div>
+        </Section>
+      )}
+
+      {!parent && (
+        <Section title="Budget & bidding" icon={PiggyBank} description="Choose who owns the budget. You can't switch a campaign between the two after it's created.">
+          <div role="radiogroup" aria-label="Budget type" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {(
+              [
+                { level: "campaign", title: "Campaign budget (CBO)", body: "Advantage campaign budget: one budget for the campaign. Meta shifts spend to the best-performing ad sets." },
+                { level: "adset", title: "Ad set budget (ABO)", body: "Set a separate budget on each ad set, so every ad set gets exactly what you assign." },
+              ] as const
+            ).map((o) => (
               <button
-                key={o}
+                key={o.level}
                 type="button"
                 role="radio"
-                aria-checked={on}
-                onClick={() => setCampaign({ objective: o, bidStrategy: o !== "OUTCOME_SALES" && c.bidStrategy === "LOWEST_COST_WITH_MIN_ROAS" ? "LOWEST_COST_WITHOUT_CAP" : c.bidStrategy })}
-                className={cn("flex gap-3 rounded-xl border p-3 text-left transition-colors", on ? "border-primary bg-primary-soft/40 ring-4 ring-[var(--ring)]" : "border-line hover:bg-hover/60")}
+                aria-checked={c.budgetLevel === o.level}
+                onClick={() => setCampaign({ budgetLevel: o.level })}
+                className={cn("rounded-xl border p-3 text-left transition-colors", c.budgetLevel === o.level ? "border-primary bg-primary-soft/40 ring-4 ring-[var(--ring)]" : "border-line hover:bg-hover/60")}
               >
-                <span className={cn("grid size-8 shrink-0 place-items-center rounded-lg", on ? "bg-primary text-white" : "bg-surface-2 text-muted ring-1 ring-inset ring-line")}>
-                  <Icon className="size-4" aria-hidden />
+                <span className="flex items-center gap-2 text-[13.5px] font-medium">
+                  <span className={cn("grid size-4 place-items-center rounded-full border", c.budgetLevel === o.level ? "border-primary" : "border-line")}>
+                    {c.budgetLevel === o.level && <span className="size-2 rounded-full bg-primary" />}
+                  </span>
+                  {o.title}
                 </span>
-                <span>
-                  <span className="block text-[13.5px] font-medium">{OBJECTIVE_LABELS[o]}</span>
-                  <span className="mt-0.5 block text-[12.5px] text-muted">{body}</span>
-                </span>
+                <span className="mt-1 block text-[12.5px] text-muted">{o.body}</span>
               </button>
-            );
-          })}
-        </div>
-        <fieldset className="flex flex-col gap-2">
-          <legend className="mb-1 text-[13px] font-medium">Special ad categories</legend>
-          <p className="-mt-1 text-[12.5px] text-muted">Declare if ads are about credit, employment, housing, social issues or politics. Targeting options are limited for these.</p>
-          <div className="grid gap-1.5 sm:grid-cols-2">
-            {SPECIAL_AD_CATEGORIES.map((cat) => (
-              <label key={cat} className="flex cursor-pointer items-center gap-2 text-[13px]">
-                <input
-                  type="checkbox"
-                  checked={c.specialAdCategories.includes(cat)}
-                  onChange={() => setCampaign({ specialAdCategories: c.specialAdCategories.includes(cat) ? c.specialAdCategories.filter((x) => x !== cat) : [...c.specialAdCategories, cat] })}
-                  className="size-4 accent-primary"
-                />
-                {CATEGORY_LABEL[cat]}
-              </label>
             ))}
           </div>
-          {c.specialAdCategories.length > 0 && (
-            <Field label="Countries where the ads run" hint="Two-letter codes, comma separated." htmlFor="cats">
-              <Input id="cats" value={c.specialAdCountries} onChange={(e) => setCampaign({ specialAdCountries: e.target.value })} />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Budget schedule">
+              <Choice
+                label="Budget schedule"
+                value={c.budgetSchedule}
+                onChange={(v) => setCampaign({ budgetSchedule: v })}
+                options={[
+                  { value: "daily", label: "Daily" },
+                  { value: "lifetime", label: "Lifetime" },
+                ]}
+              />
             </Field>
-          )}
-        </fieldset>
-      </Section>
-
-      <Section title="Budget & bidding" icon={PiggyBank} description="Choose who owns the budget. You can't switch a campaign between the two after it's created.">
-        <div role="radiogroup" aria-label="Budget type" className="grid gap-2 sm:grid-cols-2">
-          {(
-            [
-              { level: "campaign", title: "Campaign budget (CBO)", body: "Advantage campaign budget: one budget for the campaign. Meta shifts spend to the best-performing ad sets." },
-              { level: "adset", title: "Ad set budget (ABO)", body: "Set a separate budget on each ad set, so every ad set gets exactly what you assign." },
-            ] as const
-          ).map((o) => (
-            <button
-              key={o.level}
-              type="button"
-              role="radio"
-              aria-checked={c.budgetLevel === o.level}
-              onClick={() => setCampaign({ budgetLevel: o.level })}
-              className={cn("rounded-xl border p-3 text-left transition-colors", c.budgetLevel === o.level ? "border-primary bg-primary-soft/40 ring-4 ring-[var(--ring)]" : "border-line hover:bg-hover/60")}
-            >
-              <span className="flex items-center gap-2 text-[13.5px] font-medium">
-                <span className={cn("grid size-4 place-items-center rounded-full border", c.budgetLevel === o.level ? "border-primary" : "border-line")}>
-                  {c.budgetLevel === o.level && <span className="size-2 rounded-full bg-primary" />}
-                </span>
-                {o.title}
-              </span>
-              <span className="mt-1 block text-[12.5px] text-muted">{o.body}</span>
-            </button>
-          ))}
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Budget schedule">
-            <Choice
-              label="Budget schedule"
-              value={c.budgetSchedule}
-              onChange={(v) => setCampaign({ budgetSchedule: v })}
-              options={[
-                { value: "daily", label: "Daily" },
-                { value: "lifetime", label: "Lifetime" },
-              ]}
-            />
-          </Field>
-          {cbo ? (
-            <Field label={`${lifetime ? "Lifetime" : "Daily"} campaign budget`} htmlFor="campaign-budget">
-              <MoneyInput id="campaign-budget" currency={currency} value={c.budget} onChange={(v) => setCampaign({ budget: v })} />
+            {cbo ? (
+              <Field label={`${lifetime ? "Lifetime" : "Daily"} campaign budget`} htmlFor="campaign-budget">
+                <MoneyInput id="campaign-budget" currency={currency} value={c.budget} onChange={(v) => setCampaign({ budget: v })} />
+              </Field>
+            ) : (
+              <p className="self-end pb-2 text-[12.5px] text-muted">You&apos;ll set a {lifetime ? "lifetime" : "daily"} budget on each ad set.</p>
+            )}
+            {!cbo && !lifetime && (
+              <div className="flex items-start justify-between gap-4 rounded-lg bg-surface-2 p-3 ring-1 ring-inset ring-line-soft sm:col-span-2">
+                <div className="min-w-0">
+                  <p className="text-[13px] font-medium">Budget sharing</p>
+                  <p className="mt-0.5 text-[12.5px] text-muted">Let Meta move up to 20% of each ad set&apos;s daily budget to other ad sets in this campaign when they&apos;re likely to do better.</p>
+                </div>
+                <Switch on={c.budgetSharing} label="Budget sharing" onChange={(budgetSharing) => setCampaign({ budgetSharing })} />
+              </div>
+            )}
+            <Field label="Bid strategy" hint={BID_HELP[c.bidStrategy]} htmlFor="bid">
+              <Select id="bid" value={c.bidStrategy} onChange={(e) => setCampaign({ bidStrategy: e.target.value as BidStrategy })}>
+                {BID_STRATEGIES.filter((b) => b !== "LOWEST_COST_WITH_MIN_ROAS" || c.objective === "OUTCOME_SALES").map((b) => (
+                  <option key={b} value={b}>
+                    {BID_STRATEGY_LABELS[b]}
+                  </option>
+                ))}
+              </Select>
             </Field>
-          ) : (
-            <p className="self-end pb-2 text-[12.5px] text-muted">You&apos;ll set a {lifetime ? "lifetime" : "daily"} budget on each ad set.</p>
-          )}
-          <Field label="Bid strategy" hint={BID_HELP[c.bidStrategy]} htmlFor="bid">
-            <Select id="bid" value={c.bidStrategy} onChange={(e) => setCampaign({ bidStrategy: e.target.value as BidStrategy })}>
-              {BID_STRATEGIES.filter((b) => b !== "LOWEST_COST_WITH_MIN_ROAS" || c.objective === "OUTCOME_SALES").map((b) => (
-                <option key={b} value={b}>
-                  {BID_STRATEGY_LABELS[b]}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Campaign spending limit" hint="Optional lifetime cap across the campaign." htmlFor="cap">
-            <MoneyInput id="cap" currency={currency} value={c.spendCap} placeholder="No limit" onChange={(v) => setCampaign({ spendCap: v })} />
-          </Field>
-        </div>
-      </Section>
+            <Field label="Campaign spending limit" hint="Optional lifetime cap across the campaign." htmlFor="cap">
+              <MoneyInput id="cap" currency={currency} value={c.spendCap} placeholder="No limit" onChange={(v) => setCampaign({ spendCap: v })} />
+            </Field>
+          </div>
+        </Section>
+      )}
 
-      <Section title="Schedule" icon={CalendarClock} description={`Applies to every ad set. Times are in the ad account's timezone (${timeZone}).`}>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Start" htmlFor="start" hint="Leave empty to start as soon as it's approved.">
-            <Input id="start" type="datetime-local" value={c.start} onChange={(e) => setCampaign({ start: e.target.value })} />
-          </Field>
-          <Field label={`End${lifetime ? " (required for lifetime budgets)" : " (optional)"}`} htmlFor="end">
-            <div className="flex gap-2">
-              <Input id="end" type="datetime-local" value={c.end} min={c.start || undefined} onChange={(e) => setCampaign({ end: e.target.value })} />
-              {c.end && (
-                <Button variant="ghost" onClick={() => setCampaign({ end: "" })}>
-                  Clear
-                </Button>
-              )}
-            </div>
-          </Field>
-        </div>
-      </Section>
+      {mode !== "adset" && (
+        <Section title="Schedule" icon={CalendarClock} description={`Applies to every ${mode === "campaign" ? "new " : ""}ad set. Times are in the ad account's timezone (${timeZone}).`}>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Start" htmlFor="start" hint="Leave empty to start as soon as it's approved.">
+              <Input id="start" type="datetime-local" value={c.start} onChange={(e) => setCampaign({ start: e.target.value })} />
+            </Field>
+            <Field label={`End${lifetime ? " (required for lifetime budgets)" : " (optional)"}`} htmlFor="end">
+              <div className="flex gap-2">
+                <Input id="end" type="datetime-local" value={c.end} min={c.start || undefined} onChange={(e) => setCampaign({ end: e.target.value })} />
+                {c.end && (
+                  <Button variant="ghost" onClick={() => setCampaign({ end: "" })}>
+                    Clear
+                  </Button>
+                )}
+              </div>
+            </Field>
+          </div>
+        </Section>
+      )}
     </div>
+  );
+}
+
+/**
+ * Instagram identity: the Page's linked account, accounts assigned to the ad account, the Page itself, or an ID.
+ * An account the ad account can't use fails with 1815199, so the assigned ones come from Meta rather than guesses.
+ */
+function InstagramField({ accountId, page, value, onChange }: { accountId: string; page?: PageOption; value: string; onChange: (id: string) => void }) {
+  const [accounts, setAccounts] = useState<InstagramOption[] | null>(null);
+  const [typing, setTyping] = useState(false);
+  useEffect(() => {
+    let live = true;
+    lookupInstagramAccounts(accountId).then((res) => live && setAccounts(res.ok ? res.items : []));
+    return () => {
+      live = false;
+    };
+  }, [accountId]);
+  const options = [
+    ...(page?.instagram ? [{ id: page.instagram.id, label: `@${page.instagram.username ?? page.instagram.id} · linked to the Page` }] : []),
+    ...(accounts ?? []).filter((a) => a.id !== page?.instagram?.id).map((a) => ({ id: a.id, label: `@${a.username ?? a.id}` })),
+  ];
+  const known = !value || options.some((o) => o.id === value);
+  const manual = typing || !known;
+  return (
+    <Field
+      label="Instagram account"
+      htmlFor="ig"
+      hint={
+        options.length === 0 && accounts !== null
+          ? "No Instagram accounts are assigned to this ad account. Ads on Instagram will run as the Page, or assign one in Business Settings → Accounts → Instagram accounts."
+          : "Ads on Instagram run as this account."
+      }
+    >
+      <Select
+        id="ig"
+        value={manual ? "__manual" : value}
+        onChange={(e) => {
+          if (e.target.value === "__manual") return setTyping(true);
+          setTyping(false);
+          onChange(e.target.value);
+        }}
+      >
+        <option value="">Use the Facebook Page</option>
+        {options.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.label}
+          </option>
+        ))}
+        <option value="__manual">Other account (enter ID)…</option>
+      </Select>
+      {manual && <Input className="mt-2" value={value} onChange={(e) => onChange(e.target.value.replace(/\D/g, ""))} placeholder="Instagram account ID" inputMode="numeric" aria-label="Instagram account ID" />}
+    </Field>
   );
 }
 
@@ -324,7 +423,7 @@ export function NameField({ id, label, value, edited, onChange, onReset }: { id:
         <span className="flex items-center justify-between gap-2">
           {label}
           {edited ? (
-            <button type="button" onClick={onReset} className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
+            <button type="button" onClick={onReset} className="inline-flex items-center gap-1 text-xs font-medium text-primary-ink hover:underline">
               <RotateCcw className="size-3" aria-hidden /> Use naming convention
             </button>
           ) : (

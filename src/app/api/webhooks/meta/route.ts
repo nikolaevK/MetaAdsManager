@@ -34,12 +34,37 @@ type WebhookBody = {
   entry?: { id: string; changes?: { field: string; value?: unknown }[] }[];
 };
 
+/** Meta's deliveries are a few KB; anything far larger is refused before it is read into memory. */
+const MAX_BODY_BYTES = 1_000_000;
+
+/** Reads the body up to `max` bytes; null when it is larger. */
+async function readCapped(request: Request, max: number): Promise<string | null> {
+  const declared = Number(request.headers.get("content-length") ?? NaN);
+  if (declared > max) return null;
+  const reader = request.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 /** Ad account review changes → immediate review sync (polling remains the fallback). */
 export async function POST(request: Request): Promise<Response> {
   const secret = env().META_APP_SECRET;
   if (!secret) return new Response("Webhook secret not configured", { status: 503 });
 
-  const raw = await request.text();
+  const raw = await readCapped(request, MAX_BODY_BYTES);
+  if (raw === null) return new Response("Payload too large", { status: 413 });
   if (!validSignature(raw, request.headers.get("x-hub-signature-256"), secret)) {
     return new Response("Invalid signature", { status: 401 });
   }

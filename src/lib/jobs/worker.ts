@@ -7,7 +7,8 @@ import { runInsightsJob, type InsightsPayload } from "@/lib/sync/insights";
 import { syncReview } from "@/lib/sync/review";
 import { syncStructure } from "@/lib/sync/structure";
 import type { LaunchStatus } from "@/lib/db/schema";
-import { claimNext, complete, fail, reapStale, reschedule, type Job, type JobType } from "./queue";
+import { pendingMigrations } from "@/lib/db/migrations";
+import { claimNext, complete, fail, heartbeat, reapStale, reschedule, type Job, type JobType } from "./queue";
 import { scheduleRecurring } from "./scheduler";
 import type { HandlerResult } from "./types";
 
@@ -42,9 +43,13 @@ function backoffMs(attempt: number): number {
   return base + Math.floor(Math.random() * base * 0.2);
 }
 
+/** While a job runs, its lock is refreshed so the stale-lock reaper never hands a long job to a second worker. */
+const HEARTBEAT_MS = 60_000;
+
 async function execute(job: Job): Promise<void> {
   const handler = HANDLERS[job.type as JobType];
   if (!handler) return fail(job, `Unknown job type ${job.type}`);
+  const beat = setInterval(() => void heartbeat(job).catch(() => undefined), HEARTBEAT_MS);
   try {
     const result = await handler.run(job.payload);
     if (result) {
@@ -68,6 +73,8 @@ async function execute(job: Job): Promise<void> {
     console.error(`[jobs] ${job.type} ${job.id} failed permanently:`, err);
     await fail(job, errorMessage(err));
     await handler.onFinalFailure?.(job.payload, err);
+  } finally {
+    clearInterval(beat);
   }
 }
 
@@ -76,6 +83,12 @@ async function execute(job: Job): Promise<void> {
  * Invoked by /api/cron, `npm run worker`, and after user actions that enqueue work.
  */
 export async function runWorker(opts: { budgetMs?: number; concurrency?: number } = {}): Promise<{ processed: number }> {
+  // With the schema behind the code, jobs would fail on missing tables/columns (and a failed build rolls back).
+  const pending = await pendingMigrations();
+  if (pending.length) {
+    console.warn(`[jobs] Waiting: ${pending.length} database migration(s) not applied. Run \`npm run db:migrate\`.`);
+    return { processed: 0 };
+  }
   const workerId = `${hostname()}:${process.pid}:${Math.random().toString(36).slice(2, 8)}`;
   const deadline = Date.now() + (opts.budgetMs ?? 50_000);
   await reapStale();
@@ -83,12 +96,19 @@ export async function runWorker(opts: { budgetMs?: number; concurrency?: number 
   let processed = 0;
   const lane = async () => {
     while (Date.now() < deadline) {
-      const job = await claimNext(workerId);
-      if (!job) return;
-      await execute(job);
-      processed++;
+      try {
+        const job = await claimNext(workerId);
+        if (!job) return;
+        await execute(job);
+        processed++;
+      } catch (err) {
+        // The database itself failed (e.g. while recording a job's outcome): stop this lane; the job's lock
+        // expires and it is picked up again later. Other lanes keep going.
+        console.error("[jobs] worker lane stopped:", err);
+        return;
+      }
     }
   };
-  await Promise.all(Array.from({ length: opts.concurrency ?? 3 }, lane));
+  await Promise.allSettled(Array.from({ length: opts.concurrency ?? 3 }, lane));
   return { processed };
 }

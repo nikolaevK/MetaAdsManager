@@ -2,7 +2,7 @@
 
 import { Check, ChevronsUpDown, Search } from "lucide-react";
 import { useEffect, useRef, useState, useTransition } from "react";
-import { cn } from "@/components/ui";
+import { cn, focusRing } from "@/components/ui";
 import { selectAccount } from "@/app/(app)/actions";
 
 export type AccountOption = { id: string; name: string; clientName: string };
@@ -21,22 +21,34 @@ function Monogram({ name, className }: { name: string; className?: string }) {
   );
 }
 
+/** Typing fields pop the on-screen keyboard, so only focus the search on mouse/trackpad devices. */
+function focusOnFinePointer(el: HTMLInputElement | null) {
+  if (el && matchMedia("(pointer: fine)").matches) el.focus();
+}
+
 export function AccountSwitcher({ accounts, currentId }: { accounts: AccountOption[]; currentId: string | null }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [pending, start] = useTransition();
   const ref = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
   const current = accounts.find((a) => a.id === currentId);
 
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // Capture phase + preventDefault: the mobile drawer around the switcher stays open. Focus returns to the trigger.
+      e.preventDefault();
+      setOpen(false);
+      trigger.current?.focus();
+    };
     document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
     return () => {
       document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKey, true);
     };
   }, [open]);
 
@@ -50,12 +62,14 @@ export function AccountSwitcher({ accounts, currentId }: { accounts: AccountOpti
   return (
     <div ref={ref} className="relative min-w-0">
       <button
+        ref={trigger}
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
         className={cn(
           "flex w-full items-center gap-2.5 rounded-lg border border-line bg-surface p-1.5 pr-2 text-left shadow-xs transition-colors hover:bg-hover",
+          focusRing,
           pending && "opacity-60",
         )}
       >
@@ -69,11 +83,13 @@ export function AccountSwitcher({ accounts, currentId }: { accounts: AccountOpti
         <ChevronsUpDown className="size-4 shrink-0 text-faint" />
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-1.5 w-[min(20rem,calc(100vw-1.5rem))] animate-pop-in rounded-xl border border-line bg-surface p-1.5 shadow-pop">
+        // Below md the switcher only lives in the 18rem drawer, so the menu matches the trigger instead of spilling out.
+        <div className="absolute left-0 top-full z-50 mt-1.5 w-full animate-pop-in rounded-xl border border-line bg-surface p-1.5 shadow-pop md:w-80">
           <div className="relative mb-1.5">
             <Search className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-faint" />
             <input
-              autoFocus
+              ref={focusOnFinePointer}
+              aria-label="Find an ad account"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Find an ad account"
@@ -94,7 +110,7 @@ export function AccountSwitcher({ accounts, currentId }: { accounts: AccountOpti
                       setOpen(false);
                       start(() => selectAccount(a.id));
                     }}
-                    className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] hover:bg-hover"
+                    className={cn("flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] hover:bg-hover pointer-coarse:py-2.5", focusRing)}
                   >
                     <Monogram name={a.clientName} className="size-6 text-[11px]" />
                     <span className="min-w-0 flex-1 truncate">

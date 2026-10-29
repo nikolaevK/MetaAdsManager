@@ -43,16 +43,22 @@ export async function getHistory(accountId: string, limit = 150): Promise<Histor
   }
 
   const ids = new Set<string>();
-  for (const { a } of rows) for (const id of a.entityId?.split(",") ?? []) if (/^\d+$/.test(id)) ids.add(id);
+  const launchIds = new Set<string>();
+  for (const { a } of rows)
+    for (const id of a.entityId?.split(",") ?? []) {
+      if (/^\d+$/.test(id)) ids.add(id);
+      else if (a.entityType === "launch") launchIds.add(id);
+    }
   const list = [...ids];
   const names = new Map<string, string>();
-  if (list.length) {
-    const [c, s, ad] = await Promise.all([
-      db().select({ id: campaigns.id, name: campaigns.name }).from(campaigns).where(inArray(campaigns.id, list)),
-      db().select({ id: adsets.id, name: adsets.name }).from(adsets).where(inArray(adsets.id, list)),
-      db().select({ id: ads.id, name: ads.name }).from(ads).where(inArray(ads.id, list)),
+  if (list.length || launchIds.size) {
+    const [c, s, ad, l] = await Promise.all([
+      list.length ? db().select({ id: campaigns.id, name: campaigns.name }).from(campaigns).where(inArray(campaigns.id, list)) : [],
+      list.length ? db().select({ id: adsets.id, name: adsets.name }).from(adsets).where(inArray(adsets.id, list)) : [],
+      list.length ? db().select({ id: ads.id, name: ads.name }).from(ads).where(inArray(ads.id, list)) : [],
+      launchIds.size ? db().select({ id: launches.id, name: launches.name }).from(launches).where(inArray(launches.id, [...launchIds])) : [],
     ]);
-    for (const r of [...c, ...s, ...ad]) names.set(r.id, r.name);
+    for (const r of [...c, ...s, ...ad, ...l]) names.set(r.id, r.name);
   }
 
   return rows.map(({ a, userName }) => {

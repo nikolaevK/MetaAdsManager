@@ -1,53 +1,48 @@
 "use server";
 
-import { and, between, desc, eq, isNull } from "drizzle-orm";
+import { and, between, eq } from "drizzle-orm";
 import { refresh } from "next/cache";
 import { z } from "zod";
 import { failure, UserError, type ActionState } from "@/lib/action-result";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth/session";
+import { takeMetaQuota } from "@/lib/auth/user-rate";
 import { addDays, daysBetween, isIsoDate, MAX_RANGE_DAYS, zonedLocalToIso } from "@/lib/dates";
 import { db } from "@/lib/db";
-import { ads, adsets, clients, creativeAssets, creatives, insightsDaily, utmRules } from "@/lib/db/schema";
-import { findOrCreateCreative, loadMedia } from "@/lib/creatives";
+import { insightsDaily } from "@/lib/db/schema";
 import { kickWorker } from "@/lib/jobs/kick";
 import { enqueue, PRIORITY } from "@/lib/jobs/queue";
-import { creativeFeaturesSpec, creativePayload, creativePositions, fromCopy, fromMinorUnits, toMinorUnits } from "@/lib/launch/payloads";
-import { destinationFromAdset } from "@/lib/launch/objectives";
-import { CONVERSION_EVENTS, mediaPickSchema } from "@/lib/launch/spec";
-import { buildUrlTags, DEFAULT_UTM_PARAMS } from "@/lib/launch/utm";
+import { creativeFeaturesSpec, fromMinorUnits, toMinorUnits } from "@/lib/launch/payloads";
+import { CREATIVE_FEATURES, MAX_FEED_BODY } from "@/lib/launch/spec";
 import { graph, type Params } from "@/lib/meta/client";
+import { MetaApiError } from "@/lib/meta/errors";
 import {
   BID_STRATEGIES,
   DEFAULT_PLACEMENTS,
-  needsBidAmount,
-  usesPixel,
   type AdData,
   type AdsetData,
   type CampaignData,
   type DetailedItem,
   type GeoItem,
   type Issue,
-  type LibraryAsset,
-  type LibraryCreative,
   type LoadResult,
 } from "@/lib/meta/editor-types";
 import { audienceSchema, placementsSchema } from "@/lib/meta/editor-schemas";
-import { ensureMetaMedia } from "@/lib/meta/media";
 import { createObject, fetchObject, REMOVE_SPEND_CAP, updateObject, type Change } from "@/lib/meta/objects";
-import { extractPreviewSrc, generatePreview, PREVIEW_FORMATS, type PreviewFormat } from "@/lib/meta/previews";
+import { extractPreviewSrc, PREVIEW_FORMATS, type PreviewFormat } from "@/lib/meta/previews";
 import {
   applyAudience,
   applyPlacements,
   audienceFromTargeting,
   countryName,
   creativeInfo,
+  MAX_TEXT_OPTIONS,
   placementsFromTargeting,
   rebuildCreative,
 } from "@/lib/meta/targeting";
 import { emptySums, type MetricSums } from "@/lib/metrics";
 import { metricSums } from "@/lib/queries/metric-sql";
-import { connectedAccount, resolveAccount, type ConnectedAccount } from "@/lib/queries/ownership";
+import { assertNotAwaitingApproval, connectedAccount, resolveAccount, type ConnectedAccount } from "@/lib/queries/ownership";
 
 type Obj = Record<string, unknown>;
 const metaId = z.string().regex(/^\d+$/);
@@ -58,8 +53,6 @@ const str = (v: unknown) => (v === undefined || v === null || v === "" ? null : 
 const major = (v: unknown, currency: string) => (v === undefined || v === null || v === "" || Number(v) <= 0 ? null : fromMinorUnits(Number(v), currency));
 const issues = (v: unknown): Issue[] =>
   (Array.isArray(v) ? v : []).map((i: Obj) => ({ message: String(i.error_summary ?? i.error_message ?? "Issue"), level: str(i.level) ?? undefined }));
-
-type CreateResult = { ok: boolean; message?: string; error?: string; id?: string };
 
 function fail(err: unknown): { ok: false; error: string } {
   return { ok: false, error: failure(err)?.error ?? "Something went wrong" };
@@ -82,7 +75,8 @@ async function afterWrite(account: ConnectedAccount) {
 
 export async function loadObjectAction(level: "campaign" | "adset" | "ad", id: string): Promise<LoadResult<CampaignData | AdsetData | AdData>> {
   try {
-    await requireUser("viewer");
+    const user = await requireUser("viewer");
+    takeMetaQuota(user.id);
     const lvl = levelSchema.parse(level);
     const objId = metaId.parse(id);
     const account = await resolveAccount(lvl, [objId]);
@@ -165,6 +159,10 @@ export async function loadObjectAction(level: "campaign" | "adset" | "ad", id: s
       instagramUserId: info.instagramUserId,
       copy: info.copy,
       copyEditable: info.editable,
+      maxTexts: info.maxTexts,
+      fixedTexts: info.fixedTexts,
+      website: info.website,
+      features: info.features,
       review: Object.values(feedback).flatMap((r) => Object.entries(r).map(([k, v]) => `${k}: ${v}`)),
       issues: issues(o.issues_info),
       createdTime: str(o.created_time),
@@ -200,6 +198,7 @@ export async function saveCampaignAction(id: string, patch: z.input<typeof campa
     const objId = metaId.parse(id);
     const p = campaignPatch.parse(patch);
     const account = await resolveAccount("campaign", [objId]);
+    await assertNotAwaitingApproval("campaign", [objId]);
     const params: Params = {};
     if (p.name) params.name = p.name;
     if (p.budget && p.budgetType) params[p.budgetType === "daily" ? "daily_budget" : "lifetime_budget"] = toMinorUnits(p.budget, account.currency);
@@ -235,6 +234,7 @@ export async function saveAdsetAction(id: string, patch: z.input<typeof adsetPat
     const objId = metaId.parse(id);
     const p = adsetPatch.parse(patch);
     const account = await resolveAccount("adset", [objId]);
+    await assertNotAwaitingApproval("adset", [objId]);
     const params: Params = {};
     if (p.name) params.name = p.name;
     if (p.budget && p.budgetType) params[p.budgetType === "daily" ? "daily_budget" : "lifetime_budget"] = toMinorUnits(p.budget, account.currency);
@@ -260,17 +260,40 @@ export async function saveAdsetAction(id: string, patch: z.input<typeof adsetPat
   }
 }
 
+const httpUrl = z.url({ protocol: /^https?$/, message: "Enter a full https:// URL" });
 const copySchema = z.object({
-  primaryText: z.string().trim().min(1, "Primary text is required").max(2200),
-  headline: z.string().trim().min(1, "Headline is required").max(255),
+  primaryTexts: z.array(z.string().trim().min(1, "Primary text can't be empty").max(2200)).min(1).max(MAX_TEXT_OPTIONS),
+  headlines: z.array(z.string().trim().min(1, "Headline can't be empty").max(255)).min(1).max(MAX_TEXT_OPTIONS),
   description: z.string().trim().max(255),
-  url: z.url({ protocol: /^https?$/, message: "Enter a full https:// URL" }),
-  // Any Meta CTA enum value (the picker offers CTA_TYPES; existing ads may use others).
+  url: httpUrl.or(z.literal("")),
+  displayLink: z.string().trim().max(100),
+  // Any Meta CTA enum value (the picker offers the common ones; existing ads may use others).
   cta: z.string().regex(/^[A-Z_]{2,40}$/),
   urlTags: z.string().trim().max(1000),
 });
 
-const adPatch = z.object({ name: z.string().trim().min(1).max(400).optional(), copy: copySchema.optional() });
+const adPatch = z.object({
+  name: z.string().trim().min(1).max(400).optional(),
+  copy: copySchema.optional(),
+  /** Advantage+ creative enhancements to keep on; every other one is opted out. */
+  features: z.array(z.enum(CREATIVE_FEATURES)).optional(),
+  /** Multi-advertiser ads for the new creative; unset = keep the old creative's setting. */
+  multiAdvertiser: z.enum(["on", "off"]).optional(),
+});
+
+const CREATIVE_EDIT_FIELDS = "id,name,object_story_spec,asset_feed_spec,url_tags,object_story_id,effective_object_story_id,degrees_of_freedom_spec";
+
+/** The ad's creative with its multi-advertiser setting; that field is re-read without when Meta won't return it. */
+async function creativeForEdit(adId: string, accountId: string): Promise<Obj | undefined> {
+  try {
+    const live = await graph<{ creative?: Obj }>(adId, { params: { fields: `creative{${CREATIVE_EDIT_FIELDS},contextual_multi_ads}` }, accountId });
+    return live.creative;
+  } catch (err) {
+    if (!(err instanceof MetaApiError) || err.code !== 100) throw err;
+    const live = await graph<{ creative?: Obj }>(adId, { params: { fields: `creative{${CREATIVE_EDIT_FIELDS}}` }, accountId });
+    return live.creative;
+  }
+}
 
 export async function saveAdAction(id: string, patch: z.input<typeof adPatch>): Promise<ActionState> {
   try {
@@ -278,22 +301,30 @@ export async function saveAdAction(id: string, patch: z.input<typeof adPatch>): 
     const objId = metaId.parse(id);
     const p = adPatch.parse(patch);
     const account = await resolveAccount("ad", [objId]);
+    await assertNotAwaitingApproval("ad", [objId]);
     const params: Params = {};
     if (p.name) params.name = p.name;
     let message = "Ad updated";
-    if (p.copy) {
-      const live = await graph<{ creative?: Obj }>(objId, {
-        params: { fields: "creative{id,name,object_story_spec,asset_feed_spec,url_tags,object_story_id,effective_object_story_id,degrees_of_freedom_spec}" },
-        accountId: account.id,
-      });
-      const info = creativeInfo(live.creative);
+    if (p.copy || p.features || p.multiAdvertiser) {
+      const creative = await creativeForEdit(objId, account.id);
+      const info = creativeInfo(creative);
       if (!info.editable) throw new UserError("This ad's creative can't be edited here (existing post or carousel). Edit it in Meta Ads Manager.");
-      // Keep the enhancement choices the ad was built with; only creatives without any get everything opted out.
-      const dof = (live.creative?.degrees_of_freedom_spec ?? {}) as Obj;
-      const features = dof.creative_features_spec && typeof dof.creative_features_spec === "object" ? (dof.creative_features_spec as Obj) : creativeFeaturesSpec([]);
-      const creativeId = await createObject("adcreatives", account.id, rebuildCreative(live.creative, p.copy, features));
+      const copy = p.copy ?? info.copy;
+      if (copy.primaryTexts.length > info.maxTexts || copy.headlines.length > info.maxTexts)
+        throw new UserError(info.maxTexts === 1 ? "This ad's format allows one primary text and one headline." : `This ad's format allows up to ${info.maxTexts} text options.`);
+      if (info.fixedTexts && (copy.primaryTexts.length !== info.copy.primaryTexts.length || copy.headlines.length !== info.copy.headlines.length))
+        throw new UserError("This ad's texts are tied to placements: change their wording, not how many there are.");
+      if (info.website && !copy.url) throw new UserError("Enter the website URL.");
+      const inFeed = copy.primaryTexts.length > 1 || copy.headlines.length > 1 || info.format === "placement" || info.format === "flexible";
+      if (inFeed && copy.primaryTexts.some((t) => t.length > MAX_FEED_BODY))
+        throw new UserError(`This ad's format allows primary texts of up to ${MAX_FEED_BODY.toLocaleString("en-US")} characters.`);
+      // Unchanged toggles keep the creative's current enhancement settings (including ones this app doesn't list).
+      const current = ((creative?.degrees_of_freedom_spec ?? {}) as Obj).creative_features_spec;
+      const features = p.features ? { ...(current && typeof current === "object" ? (current as Obj) : {}), ...creativeFeaturesSpec(p.features) } : current && typeof current === "object" ? (current as Obj) : creativeFeaturesSpec([]);
+      const multi = p.multiAdvertiser === "on" ? "OPT_IN" : p.multiAdvertiser === "off" ? "OPT_OUT" : undefined;
+      const creativeId = await createObject("adcreatives", account.id, rebuildCreative(creative, copy, features, multi));
       params.creative = { creative_id: creativeId };
-      message = "Ad updated. The new copy goes through Meta review before it delivers.";
+      message = "Ad updated. The new creative goes through Meta review before it delivers.";
     }
     if (Object.keys(params).length === 0) return { ok: true, message: "No changes" };
     await saveAndAudit(user.id, "ad", objId, params, account);
@@ -301,177 +332,6 @@ export async function saveAdAction(id: string, patch: z.input<typeof adPatch>): 
     return { ok: true, message };
   } catch (err) {
     return failure(err);
-  }
-}
-
-// ── Create ───────────────────────────────────────────────────────────────────
-
-const ATTRIBUTION: Record<string, { event_type: string; window_days: number }[]> = {
-  "7d_click_1d_view": [
-    { event_type: "CLICK_THROUGH", window_days: 7 },
-    { event_type: "VIEW_THROUGH", window_days: 1 },
-  ],
-  "7d_click": [{ event_type: "CLICK_THROUGH", window_days: 7 }],
-  "1d_click": [{ event_type: "CLICK_THROUGH", window_days: 1 }],
-  "1d_click_1d_view": [
-    { event_type: "CLICK_THROUGH", window_days: 1 },
-    { event_type: "VIEW_THROUGH", window_days: 1 },
-  ],
-};
-
-const createAdsetSchema = z.object({
-  campaignId: metaId,
-  name: z.string().trim().min(1).max(400),
-  optimizationGoal: z.enum(["OFFSITE_CONVERSIONS", "VALUE", "LANDING_PAGE_VIEWS", "LINK_CLICKS", "REACH", "IMPRESSIONS", "AD_RECALL_LIFT", "THRUPLAY"]),
-  pixelId: metaId.optional(),
-  conversionEvent: z.enum(CONVERSION_EVENTS).optional(),
-  budgetType: z.enum(["daily", "lifetime"]),
-  budget: money.optional(),
-  bidStrategy: z.enum(BID_STRATEGIES),
-  bidAmount: money.optional(),
-  roasFloor: z.number().min(0.01).max(1000).optional(),
-  startTime: localTime.optional(),
-  endTime: localTime.optional(),
-  attribution: z.enum(["7d_click_1d_view", "7d_click", "1d_click", "1d_click_1d_view"]),
-  audience: audienceSchema,
-  placements: placementsSchema,
-});
-
-export async function createAdsetAction(input: z.input<typeof createAdsetSchema>): Promise<CreateResult> {
-  try {
-    const user = await requireUser("buyer");
-    const s = createAdsetSchema.parse(input);
-    const account = await resolveAccount("campaign", [s.campaignId]);
-    const campaign = await graph<Obj>(s.campaignId, { params: { fields: "objective,daily_budget,lifetime_budget,bid_strategy" }, accountId: account.id });
-    const cbo = Number(campaign.daily_budget ?? 0) > 0 || Number(campaign.lifetime_budget ?? 0) > 0;
-    const lifetime = cbo ? Number(campaign.lifetime_budget ?? 0) > 0 : s.budgetType === "lifetime";
-    const bidStrategy = cbo ? String(campaign.bid_strategy ?? "LOWEST_COST_WITHOUT_CAP") : s.bidStrategy;
-
-    if (usesPixel(s.optimizationGoal) && (!s.pixelId || !s.conversionEvent)) throw new UserError("Choose a pixel and conversion event.");
-    if (!cbo && !s.budget) throw new UserError("Enter an ad set budget.");
-    if (lifetime && !s.endTime) throw new UserError("Lifetime budgets need an end date.");
-    if (needsBidAmount(bidStrategy) && !s.bidAmount) throw new UserError("This bid strategy needs a cost or bid amount.");
-    if (bidStrategy === "LOWEST_COST_WITH_MIN_ROAS" && (s.optimizationGoal !== "VALUE" || !s.roasFloor))
-      throw new UserError("A ROAS goal needs the “Conversion value” optimization and a minimum ROAS.");
-
-    const targeting = applyPlacements(applyAudience({}, s.audience), s.placements);
-    const params: Params = {
-      name: s.name,
-      campaign_id: s.campaignId,
-      status: "PAUSED",
-      billing_event: s.optimizationGoal === "THRUPLAY" ? "THRUPLAY" : "IMPRESSIONS",
-      optimization_goal: s.optimizationGoal,
-      targeting,
-      start_time: s.startTime ? zonedLocalToIso(s.startTime, account.timezoneName) : new Date().toISOString(),
-    };
-    if (s.endTime) params.end_time = zonedLocalToIso(s.endTime, account.timezoneName);
-    if (["OFFSITE_CONVERSIONS", "VALUE", "LANDING_PAGE_VIEWS", "LINK_CLICKS"].includes(s.optimizationGoal)) params.destination_type = "WEBSITE";
-    if (usesPixel(s.optimizationGoal)) {
-      params.promoted_object = { pixel_id: s.pixelId, custom_event_type: s.conversionEvent };
-      params.attribution_spec = ATTRIBUTION[s.attribution];
-    }
-    if (!cbo) {
-      params[s.budgetType === "daily" ? "daily_budget" : "lifetime_budget"] = toMinorUnits(s.budget!, account.currency);
-      params.bid_strategy = s.bidStrategy;
-    }
-    if (needsBidAmount(bidStrategy) && s.bidAmount) params.bid_amount = toMinorUnits(s.bidAmount, account.currency);
-    if (bidStrategy === "LOWEST_COST_WITH_MIN_ROAS" && s.roasFloor) params.bid_constraints = { roas_average_floor: Math.round(s.roasFloor * 10000) };
-
-    const id = await createObject("adsets", account.id, params);
-    await db()
-      .insert(adsets)
-      .values({
-        id,
-        adAccountId: account.id,
-        campaignId: s.campaignId,
-        name: s.name,
-        status: "PAUSED",
-        effectiveStatus: "PAUSED",
-        dailyBudget: (params.daily_budget as number | undefined) ?? null,
-        lifetimeBudget: (params.lifetime_budget as number | undefined) ?? null,
-        optimizationGoal: s.optimizationGoal,
-        billingEvent: params.billing_event as string,
-        promotedObject: (params.promoted_object as Obj | undefined) ?? null,
-        startTime: params.start_time as string,
-        endTime: (params.end_time as string | undefined) ?? null,
-        createdTime: new Date().toISOString(),
-        syncedAt: Date.now(),
-      })
-      .onConflictDoNothing();
-    await audit(user.id, "adset.created", { type: "adset", id }, { accountId: account.id, name: s.name, campaignId: s.campaignId });
-    await afterWrite(account);
-    return { ok: true, message: "Ad set created (off). Add an ad next.", id };
-  } catch (err) {
-    return fail(err);
-  }
-}
-
-const createAdSchema = z.object({
-  adsetId: metaId,
-  name: z.string().trim().min(1).max(400),
-  pageId: metaId,
-  instagramUserId: metaId.optional(),
-  // Flexible format is only offered in the campaign builder.
-  media: mediaPickSchema.omit({ moreAssetIds: true }),
-  copy: copySchema,
-});
-
-/** The ad's files + copy → creative spec matching this ad set's destination and placements (uploads media to Meta if needed). */
-async function buildAdCreative(account: ConnectedAccount, input: z.infer<typeof createAdSchema>) {
-  const { square, vertical } = await loadMedia(account.clientId, input.media);
-  const sq = await ensureMetaMedia(square, account.id, "interactive");
-  const vt = vertical.id === square.id ? sq : await ensureMetaMedia(vertical, account.id, "interactive");
-  if (!sq.ready || !vt.ready) {
-    throw new UserError("Meta is still processing this video. Try again in a minute.");
-  }
-  const live = await graph<{ targeting?: Obj; destination_type?: string; promoted_object?: Obj }>(input.adsetId, {
-    params: { fields: "targeting,destination_type,promoted_object" },
-    accountId: account.id,
-  });
-  return creativePayload({
-    name: input.name,
-    pageId: input.pageId,
-    instagramUserId: input.instagramUserId,
-    square: sq.ref,
-    vertical: vt.ref,
-    ad: fromCopy(input.copy),
-    destination: destinationFromAdset(live.destination_type, live.promoted_object),
-    urlTags: input.copy.urlTags,
-    positions: creativePositions(placementsFromTargeting(live.targeting, DEFAULT_PLACEMENTS), DEFAULT_PLACEMENTS),
-  });
-}
-
-export async function createAdAction(input: z.input<typeof createAdSchema>): Promise<CreateResult> {
-  try {
-    const user = await requireUser("buyer");
-    const a = createAdSchema.parse(input);
-    const account = await resolveAccount("adset", [a.adsetId]);
-    const payload = await buildAdCreative(account, a);
-    // Keep the files in the library as a creative, like the campaign builder does.
-    await findOrCreateCreative(account.clientId, a.media, user.id);
-    const creativeId = await createObject("adcreatives", account.id, payload);
-    const id = await createObject("ads", account.id, { name: a.name, adset_id: a.adsetId, creative: { creative_id: creativeId }, status: "PAUSED" });
-    const [parent] = await db().select({ campaignId: adsets.campaignId }).from(adsets).where(eq(adsets.id, a.adsetId)).limit(1);
-    await db()
-      .insert(ads)
-      .values({
-        id,
-        adAccountId: account.id,
-        campaignId: parent?.campaignId ?? "",
-        adsetId: a.adsetId,
-        name: a.name,
-        status: "PAUSED",
-        effectiveStatus: "PAUSED",
-        creativeId,
-        createdTime: new Date().toISOString(),
-        syncedAt: Date.now(),
-      })
-      .onConflictDoNothing();
-    await audit(user.id, "ad.created", { type: "ad", id }, { accountId: account.id, name: a.name, adsetId: a.adsetId, creativeId });
-    await afterWrite(account);
-    return { ok: true, message: "Ad created (off). It's reviewed by Meta once you turn it on.", id };
-  } catch (err) {
-    return fail(err);
   }
 }
 
@@ -483,7 +343,8 @@ type PreviewResult = { ok: true; src: string } | { ok: false; error: string };
 /** Placement render of a live ad. */
 export async function previewAdAction(adId: string, format: PreviewFormat): Promise<PreviewResult> {
   try {
-    await requireUser("viewer");
+    const user = await requireUser("viewer");
+    takeMetaQuota(user.id);
     const id = metaId.parse(adId);
     const fmt = formatSchema.parse(format);
     const account = await resolveAccount("ad", [id]);
@@ -496,27 +357,14 @@ export async function previewAdAction(adId: string, format: PreviewFormat): Prom
   }
 }
 
-/** Placement render of an ad that hasn't been created yet. */
-export async function previewNewAdAction(input: z.input<typeof createAdSchema>, format: PreviewFormat): Promise<PreviewResult> {
-  try {
-    await requireUser("buyer");
-    const a = createAdSchema.parse({ ...input, name: input.name || "Preview" });
-    const account = await resolveAccount("adset", [a.adsetId]);
-    const payload = await buildAdCreative(account, a);
-    return { ok: true, src: await generatePreview(account.id, payload, formatSchema.parse(format)) };
-  } catch (err) {
-    if (err instanceof z.ZodError) return { ok: false, error: err.issues[0]?.message ?? "Fill in the ad first" };
-    return fail(err);
-  }
-}
-
 // ── Lookups ──────────────────────────────────────────────────────────────────
 
 type Lookup<T> = { ok: true; items: T[] } | { ok: false; error: string };
 
 export async function searchLocationsAction(accountId: string, q: string): Promise<Lookup<GeoItem>> {
   try {
-    await requireUser("buyer");
+    const user = await requireUser("buyer");
+    takeMetaQuota(user.id);
     const account = await connectedAccount(accountId);
     const query = z.string().trim().min(1).max(100).parse(q);
     const res = await graph<{ data: Obj[] }>("search", {
@@ -539,7 +387,8 @@ export async function searchLocationsAction(accountId: string, q: string): Promi
 
 export async function searchDetailedAction(accountId: string, q: string): Promise<Lookup<DetailedItem>> {
   try {
-    await requireUser("buyer");
+    const user = await requireUser("buyer");
+    takeMetaQuota(user.id);
     const account = await connectedAccount(accountId);
     const query = z.string().trim().min(1).max(100).parse(q);
     const map = (d: Obj): DetailedItem => ({
@@ -560,53 +409,6 @@ export async function searchDetailedAction(accountId: string, q: string): Promis
   } catch (err) {
     return fail(err);
   }
-}
-
-/** Library creatives of the account's client, for the "new ad" picker. */
-export async function libraryCreativesAction(accountId: string): Promise<Lookup<LibraryCreative>> {
-  try {
-    await requireUser("buyer");
-    const account = await connectedAccount(accountId);
-    const rows = await db()
-      .select({ c: creatives })
-      .from(creatives)
-      .where(and(eq(creatives.clientId, account.clientId), isNull(creatives.archivedAt)))
-      .orderBy(desc(creatives.createdAt))
-      .limit(300);
-    return {
-      ok: true,
-      items: rows.map(({ c }) => ({ id: c.id, name: c.name, kind: c.kind, single: c.squareAssetId === c.verticalAssetId, assetId: c.squareAssetId, verticalAssetId: c.verticalAssetId })),
-    };
-  } catch (err) {
-    return fail(err);
-  }
-}
-
-/** Library files of the account's client, for uploading / cropping media right in the "new ad" form. */
-export async function libraryAssetsAction(accountId: string): Promise<{ ok: true; clientId: string; items: LibraryAsset[] } | { ok: false; error: string }> {
-  try {
-    await requireUser("buyer");
-    const account = await connectedAccount(accountId);
-    const items = await db()
-      .select({ id: creativeAssets.id, kind: creativeAssets.kind, fileName: creativeAssets.fileName, width: creativeAssets.width, height: creativeAssets.height, aspect: creativeAssets.aspect })
-      .from(creativeAssets)
-      .where(eq(creativeAssets.clientId, account.clientId))
-      .orderBy(desc(creativeAssets.createdAt))
-      .limit(500);
-    return { ok: true, clientId: account.clientId, items };
-  } catch (err) {
-    return fail(err);
-  }
-}
-
-/** Default URL parameters for new ads: the client's UTM rule. */
-export async function defaultUrlTagsAction(accountId: string): Promise<string> {
-  await requireUser("buyer");
-  const account = await connectedAccount(accountId);
-  const [client] = await db().select().from(clients).where(eq(clients.id, account.clientId)).limit(1);
-  if (!client?.utmRuleId) return buildUrlTags(DEFAULT_UTM_PARAMS);
-  const [rule] = await db().select().from(utmRules).where(eq(utmRules.id, client.utmRuleId)).limit(1);
-  return buildUrlTags(rule?.params ?? DEFAULT_UTM_PARAMS);
 }
 
 // ── Per-object charts ────────────────────────────────────────────────────────

@@ -14,7 +14,8 @@ const FEATURES = [
 
 export default function LoginPage(props: PageProps<"/login">) {
   return (
-    <main className="grid min-h-full lg:grid-cols-[1.05fr_1fr]">
+    <main className="grid grid-cols-1 min-h-full lg:grid-cols-[1.05fr_1fr]">
+      {/* Always-dark brand hero in both themes, so it uses fixed colors instead of tokens (documented exception). */}
       <section className="relative hidden overflow-hidden bg-[#0b0b14] p-12 text-white lg:flex lg:flex-col lg:justify-between">
         {/* Soft brand glow */}
         <div aria-hidden className="pointer-events-none absolute -left-32 -top-32 size-[36rem] rounded-full bg-[radial-gradient(circle,rgba(99,102,241,0.45),transparent_65%)] blur-2xl" />

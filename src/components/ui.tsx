@@ -1,5 +1,5 @@
 import { CircleAlert, CircleCheck, Info, TriangleAlert, type LucideIcon } from "lucide-react";
-import type { ComponentProps, ReactNode } from "react";
+import { cloneElement, isValidElement, useId, type ComponentProps, type ReactNode } from "react";
 
 /**
  * Design system primitives. Server-safe (no hooks). Every color comes from a semantic token in
@@ -10,6 +10,9 @@ export function cn(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(" ");
 }
 
+/** Keyboard focus ring for every custom control (buttons, triggers, tabs, links styled as controls). */
+export const focusRing = "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--ring)]";
+
 // ── Buttons ──────────────────────────────────────────────────────────────────
 
 type Variant = "primary" | "create" | "secondary" | "ghost" | "danger" | "subtle";
@@ -17,10 +20,10 @@ type Size = "sm" | "md" | "lg" | "icon";
 
 const VARIANTS: Record<Variant, string> = {
   primary:
-    "bg-primary text-white shadow-xs border-transparent hover:bg-primary-hover [box-shadow:inset_0_1px_0_rgb(255_255_255/0.12),0_1px_2px_rgb(0_0_0/0.08)]",
+    "bg-primary text-on-primary shadow-xs border-transparent hover:bg-primary-hover [box-shadow:inset_0_1px_0_rgb(255_255_255/0.12),0_1px_2px_rgb(0_0_0/0.08)]",
   // The brand CTA: reserved for the main "make something" action on a screen.
   create:
-    "border-transparent text-white bg-gradient-to-b from-brand-from to-primary shadow-glow hover:brightness-110 [box-shadow:inset_0_1px_0_rgb(255_255_255/0.18),0_4px_14px_-4px_color-mix(in_oklab,var(--primary)_55%,transparent)]",
+    "border-transparent text-on-primary bg-gradient-to-b from-brand-from to-primary shadow-glow hover:brightness-110 [box-shadow:inset_0_1px_0_rgb(255_255_255/0.18),0_4px_14px_-4px_color-mix(in_oklab,var(--primary)_55%,transparent)]",
   secondary: "bg-surface text-ink border-line shadow-xs hover:bg-hover hover:border-line",
   ghost: "bg-transparent text-muted border-transparent hover:bg-hover hover:text-ink",
   subtle: "bg-hover text-ink border-transparent hover:bg-line-soft",
@@ -37,7 +40,7 @@ export function buttonClass(variant: Variant = "secondary", size: Size = "md", e
   return cn(
     "inline-flex items-center justify-center border font-medium whitespace-nowrap select-none",
     "transition-[background-color,border-color,color,filter,box-shadow] duration-150",
-    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--ring)]",
+    focusRing,
     "disabled:opacity-50 disabled:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
     VARIANTS[variant],
     SIZES[size],
@@ -81,6 +84,9 @@ export function Label({ className, ...props }: ComponentProps<"label">) {
   return <label className={cn("text-[13px] font-medium text-ink", className)} {...props} />;
 }
 
+/** Controls a <Field> label can point at on its own. Other children need `htmlFor` and a matching id. */
+const LABELABLE = new Set<unknown>(["input", "select", "textarea", Input, Select, Textarea]);
+
 export function Field({
   label,
   hint,
@@ -94,11 +100,19 @@ export function Field({
   children: ReactNode;
   htmlFor?: string;
 }) {
+  const auto = useId();
+  // A lone input, select or textarea is labelled automatically (given an id if it has none).
+  let control = children;
+  let target = htmlFor;
+  if (target === undefined && isValidElement<{ id?: string }>(children) && LABELABLE.has(children.type)) {
+    target = children.props.id ?? auto;
+    if (children.props.id === undefined) control = cloneElement(children, { id: auto });
+  }
   const err = Array.isArray(error) ? error[0] : error;
   return (
     <div className="flex flex-col gap-1.5">
-      <Label htmlFor={htmlFor}>{label}</Label>
-      {children}
+      <Label htmlFor={target}>{label}</Label>
+      {control}
       {err ? <p className="text-xs text-danger-ink">{err}</p> : hint ? <p className="text-xs text-muted">{hint}</p> : null}
     </div>
   );
@@ -115,23 +129,28 @@ export function CardHeader({
   description,
   actions,
   icon: Icon,
+  dense,
+  as: Heading = "h2",
 }: {
   title: ReactNode;
   description?: ReactNode;
   actions?: ReactNode;
   icon?: LucideIcon;
+  /** Tighter padding and type for cards inside sheets and step forms. */
+  dense?: boolean;
+  as?: "h2" | "h3";
 }) {
   return (
-    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line-soft px-5 py-4">
-      <div className="flex min-w-0 items-start gap-3">
+    <div className={cn("flex flex-wrap items-start justify-between border-b border-line-soft", dense ? "gap-2.5 px-4 py-3" : "gap-3 px-5 py-4")}>
+      <div className={cn("flex min-w-0 items-start", dense ? "gap-2.5" : "gap-3")}>
         {Icon && (
-          <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg border border-line bg-surface-2 text-muted">
-            <Icon className="size-4" />
+          <span className={cn("mt-0.5 grid shrink-0 place-items-center rounded-lg border border-line bg-surface-2 text-muted", dense ? "size-7" : "size-8")}>
+            <Icon className={dense ? "size-3.5" : "size-4"} aria-hidden />
           </span>
         )}
         <div className="min-w-0">
-          <h2 className="text-[14.5px] font-semibold tracking-tight">{title}</h2>
-          {description && <p className="mt-0.5 text-[13px] text-muted">{description}</p>}
+          <Heading className={cn("font-semibold tracking-tight", dense ? "text-[14px]" : "text-[14.5px]")}>{title}</Heading>
+          {description && <p className={cn("mt-0.5 text-muted", dense ? "text-[12.5px]" : "text-[13px]")}>{description}</p>}
         </div>
       </div>
       {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
@@ -269,7 +288,7 @@ export function PageSkeleton() {
         <Skeleton className="h-7 w-56" />
         <Skeleton className="h-4 w-80 max-w-full" />
       </div>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {Array.from({ length: 4 }, (_, i) => (
           <Skeleton key={i} className="h-24 rounded-xl" />
         ))}
@@ -309,7 +328,7 @@ export function Avatar({ name, className }: { name: string; className?: string }
     <span
       aria-hidden
       className={cn(
-        "grid size-8 shrink-0 place-items-center rounded-full bg-gradient-to-br from-brand-from to-brand-to text-[12px] font-semibold text-white",
+        "grid size-8 shrink-0 place-items-center rounded-full bg-gradient-to-br from-brand-from to-brand-to text-[12px] font-semibold text-on-primary",
         className,
       )}
     >
@@ -349,10 +368,10 @@ export function Stat({
   );
 }
 
-/** Pill-style segmented control built from links or buttons supplied by the caller. */
-export function Segmented({ children, className }: { children: ReactNode; className?: string }) {
+/** Pill-style segmented control built from links or buttons supplied by the caller (a tablist unless `role` says otherwise). */
+export function Segmented({ children, className, role = "tablist", ...props }: ComponentProps<"div">) {
   return (
-    <div role="tablist" className={cn("inline-flex items-center gap-0.5 rounded-xl border border-line bg-surface-2 p-0.5", className)}>
+    <div role={role} className={cn("inline-flex items-center gap-0.5 rounded-xl border border-line bg-surface-2 p-0.5", className)} {...props}>
       {children}
     </div>
   );
@@ -361,6 +380,7 @@ export function Segmented({ children, className }: { children: ReactNode; classN
 export function segmentClass(active: boolean) {
   return cn(
     "inline-flex h-8 items-center gap-2 whitespace-nowrap rounded-[10px] px-3 text-[13px] font-medium transition-colors [&_svg]:size-4",
+    focusRing,
     active ? "bg-surface text-ink shadow-card ring-1 ring-line" : "text-muted hover:text-ink",
   );
 }

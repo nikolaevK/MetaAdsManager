@@ -1,5 +1,5 @@
 import "server-only";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { launchObjects, type LaunchObjectKind } from "@/lib/db/schema";
 import { graph, graphBatch } from "@/lib/meta/client";
@@ -50,18 +50,37 @@ export class Ledger {
   }
 
   private async save(item: Omit<CreateItem, "edge" | "reconcileEdge">, values: Partial<Row>) {
-    const set = { kind: item.kind, name: item.name, payload: item.payload, ...values };
-    const [row] = await db()
-      .insert(launchObjects)
-      .values({ launchId: this.launchId, ref: item.ref, ...set })
-      .onConflictDoUpdate({ target: [launchObjects.launchId, launchObjects.ref], set })
-      .returning();
-    this.rows.set(item.ref, row);
+    await this.saveMany([{ item, values }]);
+  }
+
+  /** Upserts ledger rows, 50 per database round trip (a large launch writes thousands of them). */
+  private async saveMany(entries: { item: Omit<CreateItem, "edge" | "reconcileEdge">; values: Partial<Row> }[]) {
+    for (let i = 0; i < entries.length; i += 50) {
+      const chunk = entries.slice(i, i + 50);
+      const statements = chunk.map(({ item, values }) => {
+        const set = { kind: item.kind, name: item.name, payload: item.payload, ...values };
+        return db()
+          .insert(launchObjects)
+          .values({ launchId: this.launchId, ref: item.ref, ...set })
+          .onConflictDoUpdate({ target: [launchObjects.launchId, launchObjects.ref], set })
+          .returning();
+      });
+      const results = (await db().batch(statements as [(typeof statements)[number], ...(typeof statements)[number][]])) as Row[][];
+      results.forEach(([row], k) => this.rows.set(chunk[k].item.ref, row));
+    }
   }
 
   async markStatus(ref: string, status: "deleted" | "created") {
-    await db().update(launchObjects).set({ status }).where(eq(launchObjects.id, this.rows.get(ref)!.id));
-    this.rows.get(ref)!.status = status;
+    await this.markMany([ref], status);
+  }
+
+  async markMany(refs: string[], status: "deleted" | "created") {
+    if (refs.length === 0) return;
+    await db()
+      .update(launchObjects)
+      .set({ status })
+      .where(inArray(launchObjects.id, refs.map((r) => this.rows.get(r)!.id)));
+    for (const r of refs) this.rows.get(r)!.status = status;
   }
 
   private async reconcile(item: CreateItem, pendingSince: number): Promise<string | null> {
@@ -121,25 +140,28 @@ export class Ledger {
     }
     if (todo.length === 0) return;
 
-    for (const item of todo) await this.save(item, { metaId: null, status: "pending" });
+    // Durable "pending" rows first: if we crash after Meta creates something, the retry finds it by name.
+    await this.saveMany(todo.map((item) => ({ item, values: { metaId: null, status: "pending" } })));
 
     const results = await graphBatch<{ id: string }>(
       todo.map((i) => ({ method: "POST", relativeUrl: i.edge, params: i.payload })),
       { accountId: this.accountId, mode: "background" },
     );
     let firstError: Error | undefined;
+    const outcomes: { item: CreateItem; values: Partial<Row> }[] = [];
     for (const [k, r] of results.entries()) {
-      if (r.ok) await this.save(todo[k], { metaId: r.data.id, status: "created" });
+      if (r.ok) outcomes.push({ item: todo[k], values: { metaId: r.data.id, status: "created" } });
       else if (r.error.isTransient) {
         // Not executed, or a 5xx where Meta may still have created it: stay "pending" so the
         // retry reconciles by name instead of creating a duplicate.
         firstError ??= Object.assign(r.error, { message: `${todo[k].kind} "${todo[k].name}": ${r.error.message}` });
       } else {
         // A definite rejection (validation error), so the object doesn't exist.
-        await this.save(todo[k], { metaId: null, status: "failed" });
+        outcomes.push({ item: todo[k], values: { metaId: null, status: "failed" } });
         firstError ??= Object.assign(r.error, { message: `${todo[k].kind} "${todo[k].name}": ${r.error.message}` });
       }
     }
+    await this.saveMany(outcomes);
     if (firstError) throw firstError;
   }
 }

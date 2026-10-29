@@ -2,8 +2,9 @@
 
 import { Check, Link2, RectangleVertical, Square, Trash2, TriangleAlert, type LucideIcon } from "lucide-react";
 import { useState, useTransition } from "react";
+import { useConfirm } from "@/components/confirm-dialog";
 import { toast } from "@/components/toast";
-import { Badge, Button, cn, Field, Input } from "@/components/ui";
+import { Badge, Button, cn, Field, focusRing, Input } from "@/components/ui";
 import { createCreativeAction, deleteAssetAction } from "./actions";
 import { formatBytes, MediaThumb } from "./media-thumb";
 import { baseName, SQUARE_ASPECTS, VERTICAL_ASPECTS } from "./pairing";
@@ -26,6 +27,7 @@ export function UnpairedAssets({ assets, canEdit }: { assets: UnpairedAsset[]; c
   const [name, setName] = useState("");
   const [angle, setAngle] = useState("");
   const [pending, start] = useTransition();
+  const confirm = useConfirm();
 
   const sq = assets.find((a) => a.id === square);
   const vt = assets.find((a) => a.id === vertical);
@@ -79,11 +81,11 @@ export function UnpairedAssets({ assets, canEdit }: { assets: UnpairedAsset[]; c
             </div>
           </div>
           <div className="flex flex-col gap-4 p-4 xl:flex-row xl:items-end">
-            <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:w-[30rem] xl:shrink-0">
+            <div className="grid grid-cols-1 min-w-0 gap-2 sm:grid-cols-2 xl:w-[30rem] xl:shrink-0">
               <Slot icon={Square} label="Feed · 1:1 or 4:5" asset={sq} />
               <Slot icon={RectangleVertical} label="Stories · 9:16" asset={vt} />
             </div>
-            <div className="grid min-w-0 flex-1 gap-4 sm:grid-cols-[minmax(0,1fr)_12rem_auto] sm:items-end">
+            <div className="grid grid-cols-1 min-w-0 flex-1 gap-4 sm:grid-cols-[minmax(0,1fr)_12rem_auto] sm:items-end">
               <Field label="Name" htmlFor="pair-name">
                 <Input id="pair-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={200} required />
               </Field>
@@ -155,14 +157,15 @@ export function UnpairedAssets({ assets, canEdit }: { assets: UnpairedAsset[]; c
                       aria-label={`Delete ${a.fileName}`}
                       title="Delete file"
                       disabled={pending}
-                      onClick={() => {
-                        if (confirm(`Delete ${a.fileName}? This removes the file from the library.`))
+                      onClick={async () => {
+                        const ok = await confirm({ title: `Delete ${a.fileName}?`, body: "This removes the file from the library.", confirmLabel: "Delete file", tone: "danger" });
+                        if (ok)
                           run(() => deleteAssetAction({ id: a.id }), () => {
                             if (square === a.id) setSquare(null);
                             if (vertical === a.id) setVertical(null);
                           });
                       }}
-                      className="grid size-7 shrink-0 place-items-center rounded-md text-faint transition-colors hover:bg-danger-soft hover:text-danger-ink disabled:opacity-50"
+                      className={cn("grid size-7 shrink-0 place-items-center rounded-md text-faint transition-colors hover:bg-danger-soft hover:text-danger-ink disabled:opacity-50 pointer-coarse:size-10", focusRing)}
                     >
                       <Trash2 className="size-3.5" />
                     </button>

@@ -3,8 +3,9 @@ import { addDays, resolveDateRange, todayIn } from "@/lib/dates";
 import { isTransient, MetaApiError } from "@/lib/meta/errors";
 import { parseUsageHeaders } from "@/lib/meta/usage-headers";
 import { renderName } from "@/lib/launch/naming";
-import { adsetPayload, campaignPayload, creativeGroups, creativePayload, placementRules, toMinorUnits } from "@/lib/launch/payloads";
-import { blankState, computeNames, launchIssues, toLaunchInput } from "@/lib/launch/draft";
+import { adPayload, adsetPayload, campaignPayload, creativeGroups, creativePayload, placementRules, registrableDomain, toMinorUnits } from "@/lib/launch/payloads";
+import { blankState, computeNames, launchIssues, toLaunchInput, withParent, type ParentView } from "@/lib/launch/draft";
+import { safeNext } from "@/lib/auth/redirect";
 import { destinationFromAdset, destinationType, goalsFor } from "@/lib/launch/objectives";
 import { EVENT_ACTION_TYPES, RESULT_LABELS } from "@/lib/meta/actions";
 import { sumPixelStats } from "@/lib/meta/accounts";
@@ -22,7 +23,9 @@ import {
   type TemplateConfig,
 } from "@/lib/launch/spec";
 import { buildUrlTags, validateUtmParams } from "@/lib/launch/utm";
-import { DEFAULT_AUDIENCE, DEFAULT_PLACEMENTS } from "@/lib/meta/editor-types";
+import { DEFAULT_AUDIENCE, DEFAULT_PLACEMENTS, SPECIAL_AD_CATEGORIES } from "@/lib/meta/editor-types";
+import { audienceSchema } from "@/lib/meta/editor-schemas";
+import { applyAudience } from "@/lib/meta/targeting";
 import { extractPreviewSrc } from "@/lib/meta/previews";
 
 const config: TemplateConfig = { ...DEFAULT_TEMPLATE_CONFIG, pixelId: "123" };
@@ -43,6 +46,7 @@ const adset = (over: Partial<AdsetInput> = {}): AdsetInput => ({
 
 const spec = (campaign: Partial<LaunchSpec["campaign"]> = {}, adsets: AdsetInput[] = [adset()]): LaunchSpec => ({
   version: 2,
+  target: { mode: "new" },
   clientId: "c1",
   adAccountId: "act_1",
   pageId: "111",
@@ -54,12 +58,13 @@ const spec = (campaign: Partial<LaunchSpec["campaign"]> = {}, adsets: AdsetInput
     budgetSchedule: "daily",
     budget: 150.5,
     bidStrategy: "LOWEST_COST_WITHOUT_CAP",
+    budgetSharing: false,
     specialAdCategories: [],
     specialAdCountries: [],
     ...campaign,
   },
   adsets,
-  ads: [{ name: "Ad", creativeId: "cr1", primaryTexts: ["Body"], headlines: ["Head"], url: "https://example.com", cta: "SHOP_NOW", creativeFeaturesOptIn: [] }],
+  ads: [{ name: "Ad", creativeId: "cr1", primaryTexts: ["Body"], headlines: ["Head"], url: "https://example.com", cta: "SHOP_NOW", creativeFeaturesOptIn: [], multiAdvertiser: false, shopDestination: true }],
   urlTags: "",
 });
 
@@ -102,6 +107,37 @@ describe("MetaApiError", () => {
     expect(isTransient(new TypeError("fetch failed", { cause: new Error("ECONNRESET") }))).toBe(true);
     expect(isTransient(new DOMException("timed out", "TimeoutError"))).toBe(true);
     expect(isTransient(new TypeError("Cannot read properties of undefined (reading 'hash')"))).toBe(false);
+  });
+
+  it("doesn't treat 'changed too often' limits as account rate limits, and explains known codes", () => {
+    const budget = new MetaApiError(400, { code: 613, error_subcode: 1487632, message: "Too many changes" });
+    expect(budget.isRateLimit).toBe(false);
+    expect(budget.isTransient).toBe(false);
+    expect(budget.display).toMatch(/4 times an hour/);
+    const sameObject = new MetaApiError(400, { code: 613, error_subcode: 4841018, message: "Edited too quickly" });
+    expect(sameObject).toMatchObject({ isRateLimit: false, isTransient: true, retryAfterMs: 30_000 });
+    expect(new MetaApiError(400, { code: 100, error_subcode: 1885183, message: "dev mode" }).display).toMatch(/Development mode/);
+    expect(new MetaApiError(400, { code: 17, error_subcode: 2446079, message: "limit" }).isRateLimit).toBe(true);
+  });
+
+  it("sees a database blip through Drizzle's wrapper, so a launch build retries instead of rolling back", () => {
+    const wrap = (cause: unknown) => Object.assign(new Error("Failed query: update jobs …"), { cause });
+    const connectTimeout = Object.assign(new Error("Connect Timeout Error"), { code: "UND_ERR_CONNECT_TIMEOUT" });
+    expect(isTransient(wrap(new TypeError("fetch failed", { cause: connectTimeout })))).toBe(true);
+    expect(isTransient(wrap(Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" })))).toBe(true);
+    expect(isTransient(wrap(Object.assign(new Error("HTTP 502"), { code: "SERVER_ERROR" })))).toBe(true);
+    // A missing table is a real problem (a migration wasn't run), not something a retry fixes.
+    expect(isTransient(wrap(Object.assign(new Error("no such table: user_settings"), { code: "SQLITE_UNKNOWN" })))).toBe(false);
+  });
+});
+
+describe("post-login redirect", () => {
+  it("only follows same-site paths", () => {
+    expect(safeNext("/campaigns?level=ads")).toBe("/campaigns?level=ads");
+    expect(safeNext("/launches/new#ads")).toBe("/launches/new#ads");
+    for (const evil of ["//evil.example", "/\\evil.example", "/\t/evil.example", "/\n/evil.example", "https://evil.example", "javascript:alert(1)", ""]) {
+      expect(safeNext(evil)).toBe("/campaigns");
+    }
   });
 });
 
@@ -214,12 +250,12 @@ describe("payload builders", () => {
   });
 
   it("splits placements into a 1:1 rule and a 9:16 rule, dropping positions the format can't serve", () => {
-    const pos = { facebook: ["feed", "video_feeds", "story", "facebook_reels"], instagram: ["stream", "explore_home", "reels"] };
+    const pos = { facebook: ["feed", "instream_video", "story", "facebook_reels"], instagram: ["stream", "explore_home", "reels", "profile_reels"] };
     const img = placementRules(pos, "image");
     expect(img.square).toEqual({ publisher_platforms: ["facebook", "instagram"], facebook_positions: ["feed"], instagram_positions: ["stream", "explore_home"] });
-    expect(img.vertical).toEqual({ publisher_platforms: ["facebook", "instagram"], facebook_positions: ["story", "facebook_reels"], instagram_positions: ["reels"] });
+    expect(img.vertical).toEqual({ publisher_platforms: ["facebook", "instagram"], facebook_positions: ["story", "facebook_reels"], instagram_positions: ["reels", "profile_reels"] });
     const vid = placementRules(pos, "video");
-    expect(vid.square.facebook_positions).toEqual(["feed", "video_feeds"]);
+    expect(vid.square.facebook_positions).toEqual(["feed", "instream_video"]);
     expect(vid.square.instagram_positions).toEqual(["stream"]);
   });
 
@@ -318,6 +354,124 @@ describe("payload builders", () => {
   });
 });
 
+describe("v26 compatibility", () => {
+  it("strips placements Meta removed from any targeting it writes, even when only the audience changed", () => {
+    const live = { publisher_platforms: ["facebook", "instagram", "messenger"], facebook_positions: ["feed", "video_feeds"], instagram_positions: ["stream", "explore"], messenger_positions: ["messenger_home"], geo_locations: { countries: ["US"] } };
+    const t = applyAudience(live, { ...DEFAULT_AUDIENCE });
+    expect(t).toMatchObject({ publisher_platforms: ["facebook", "instagram"], facebook_positions: ["feed"], instagram_positions: ["stream"] });
+    expect(t.messenger_positions).toBeUndefined();
+  });
+
+  it("sends no maximum age with Advantage+ audience, and rejects a minimum over 25", () => {
+    const t = applyAudience({}, { ...DEFAULT_AUDIENCE, ageMin: 21, ageMax: 45, advantageAudience: true });
+    expect(t).toMatchObject({ age_min: 21, targeting_automation: { advantage_audience: 1 } });
+    expect(t.age_max).toBeUndefined();
+    expect(audienceSchema.safeParse({ ...DEFAULT_AUDIENCE, ageMin: 30, advantageAudience: true }).success).toBe(false);
+  });
+
+  it("drops removed positions from templates saved before v26", () => {
+    const parsed = templateConfigSchema.parse({ ...DEFAULT_TEMPLATE_CONFIG, pixelId: "1", placements: { facebook: ["feed", "video_feeds", "story"], instagram: ["stream", "explore", "reels"] } });
+    expect(parsed.placements).toEqual({ facebook: ["feed", "story"], instagram: ["stream", "reels"] });
+  });
+
+  it("offers neither IMPRESSIONS nor 2-second views on posts, nor CREDIT as a category", () => {
+    expect(goalsFor("OUTCOME_ENGAGEMENT", "on_ad", [])).toEqual(["POST_ENGAGEMENT", "THRUPLAY", "REACH"]);
+    expect(SPECIAL_AD_CATEGORIES).not.toContain("CREDIT");
+  });
+});
+
+describe("ad set options", () => {
+  it("sends CBO spend limits, DSA details and budget sharing", () => {
+    const cbo = spec({ budgetLevel: "campaign", budgetSchedule: "daily", budget: 100 }, [adset({ minSpend: 10, maxSpend: 40, dsaBeneficiary: "Acme GmbH", dsaPayor: "Acme GmbH" })]);
+    expect(adsetPayload(cbo, cbo.adsets[0], "c1", "USD")).toMatchObject({ daily_min_spend_target: 1000, daily_spend_cap: 4000, dsa_beneficiary: "Acme GmbH", dsa_payor: "Acme GmbH" });
+    const abo = spec({ budgetLevel: "adset", budgetSchedule: "daily", budgetSharing: true });
+    expect(campaignPayload(abo, "USD").is_adset_budget_sharing_enabled).toBe(true);
+    expect(campaignPayload({ ...abo, campaign: { ...abo.campaign, budgetSchedule: "lifetime" } }, "USD").is_adset_budget_sharing_enabled).toBe(false);
+  });
+
+  it("asks for DSA details when an ad set reaches the EU", () => {
+    const eu = adset({ audience: { ...DEFAULT_AUDIENCE, locations: [{ kind: "country", key: "DE", name: "Germany" }] } });
+    expect(validateLaunch(spec({}, [eu])).map((i) => i.message).join()).toMatch(/Digital Services Act/);
+    expect(validateLaunch(spec({}, [{ ...eu, dsaBeneficiary: "A", dsaPayor: "B" }]))).toEqual([]);
+  });
+
+  it("turns Advantage detailed targeting on only for strict detailed targeting", () => {
+    const detailed = [{ id: "6003", name: "Fitness", type: "interests" }];
+    expect(applyAudience({}, { ...DEFAULT_AUDIENCE, detailed, advantageDetailed: true }).targeting_optimization).toBe("expansion_all");
+    expect(applyAudience({ targeting_optimization: "expansion_all" }, { ...DEFAULT_AUDIENCE, detailed, advantageDetailed: false }).targeting_optimization).toBeUndefined();
+  });
+});
+
+describe("instant-form lead ads", () => {
+  const form = adset({ destination: "instant_form", optimizationGoal: "LEAD_GENERATION", pixelId: undefined, conversionEvent: undefined });
+
+  it("builds an ON_AD ad set promoting the Page, with no pixel", () => {
+    const leads = spec({ objective: "OUTCOME_LEADS" }, [form]);
+    const p = adsetPayload(leads, form, "c1", "USD");
+    expect(p).toMatchObject({ destination_type: "ON_AD", optimization_goal: "LEAD_GENERATION", promoted_object: { page_id: "111" } });
+    expect(p.attribution_spec).toBeUndefined();
+    expect(goalsFor("OUTCOME_LEADS", "instant_form", [])).toEqual(["LEAD_GENERATION", "QUALITY_LEAD"]);
+    expect(destinationFromAdset("ON_AD", { page_id: "1" }, "LEAD_GENERATION").kind).toBe("instant_form");
+  });
+
+  it("puts the form in the call to action, on Meta's lead-ad link", () => {
+    const img = { kind: "image" as const, hash: "h" };
+    const p = creativePayload({
+      name: "n",
+      pageId: "1",
+      square: img,
+      vertical: { kind: "image", hash: "v" },
+      ad: { ...ad, cta: "SHOP_NOW", leadFormId: "777", primaryTexts: ["A", "B"] },
+      destination: { kind: "instant_form" },
+      urlTags: "utm=x",
+      positions: DEFAULT_TEMPLATE_CONFIG.placements,
+    }) as { object_story_spec: { link_data: Record<string, unknown> }; url_tags?: string; asset_feed_spec?: unknown };
+    expect(p.object_story_spec.link_data).toMatchObject({ image_hash: "h", link: "https://fb.me/", message: "A", call_to_action: { type: "SIGN_UP", value: { lead_gen_form_id: "777" } } });
+    expect(p.asset_feed_spec).toBeUndefined();
+    expect(p.url_tags).toBeUndefined();
+  });
+
+  it("needs a form on every ad, and no website", () => {
+    const leads = spec({ objective: "OUTCOME_LEADS" }, [form]);
+    expect(validateLaunch({ ...leads, ads: [{ primaryTexts: ["a"], headlines: ["b"] }] }).map((i) => i.message)).toEqual(["Choose the instant form people fill in."]);
+    expect(validateLaunch({ ...leads, ads: [{ leadFormId: "9", primaryTexts: ["a"], headlines: ["b"] }] })).toEqual([]);
+  });
+});
+
+describe("creative and ad controls Meta defaults on", () => {
+  const img = { kind: "image" as const, hash: "h" };
+  const base = { name: "n", pageId: "1", square: img, vertical: img, urlTags: "", positions: DEFAULT_TEMPLATE_CONFIG.placements };
+
+  it("always states multi-advertiser ads, and opts out of shop routing only when asked (website ads)", () => {
+    const off = creativePayload({ ...base, ad: { ...ad, multiAdvertiser: false, shopDestination: false }, destination: { kind: "website" } });
+    expect(off).toMatchObject({ contextual_multi_ads: { enroll_status: "OPT_OUT" }, destination_spec: { destination_type: "WEBSITE_AND_SHOP_OPT_OUT" } });
+    const on = creativePayload({ ...base, ad: { ...ad, multiAdvertiser: true, shopDestination: true }, destination: { kind: "website" } });
+    expect(on).toMatchObject({ contextual_multi_ads: { enroll_status: "OPT_IN" } });
+    expect(on.destination_spec).toBeUndefined();
+    const chat = creativePayload({ ...base, ad: { ...ad, shopDestination: false }, destination: { kind: "messaging", apps: ["WHATSAPP"] } });
+    expect(chat.destination_spec).toBeUndefined();
+  });
+
+  it("adds the conversion domain to pixel ads and install tracking to app ads", () => {
+    expect(registrableDomain("https://shop.peptideads.com/p?x=1")).toBe("peptideads.com");
+    expect(registrableDomain("https://www.example.co.uk/a")).toBe("example.co.uk");
+    expect(registrableDomain("http://127.0.0.1:3000")).toBeUndefined();
+    expect(adPayload("Ad", "s1", "c1", { conversionDomain: "example.com" })).toMatchObject({ conversion_domain: "example.com", status: "PAUSED" });
+    expect(adPayload("Ad", "s1", "c1", { appId: "55" }).tracking_specs).toEqual([
+      { "action.type": ["mobile_app_install"], application: ["55"] },
+      { "action.type": ["app_custom_event"], application: ["55"] },
+    ]);
+  });
+
+  it("caps primary texts at 1,024 characters once they go into an asset feed", () => {
+    const long = "x".repeat(1500);
+    const one = validateLaunch({ ...spec(), ads: [{ url: "https://a.example", primaryTexts: [long], headlines: ["h"] }] });
+    expect(one).toEqual([]);
+    const two = validateLaunch({ ...spec(), ads: [{ url: "https://a.example", primaryTexts: [long, "short"], headlines: ["h"] }] });
+    expect(two.map((i) => i.message).join()).toMatch(/1,024 characters/);
+  });
+});
+
 describe("launch validation", () => {
   const where = (s: LaunchSpec) => validateLaunch(s).map((i) => `${i.where}: ${i.message}`);
 
@@ -343,7 +497,9 @@ describe("launch validation", () => {
   });
 
   it("rejects destinations and goals the objective doesn't offer", () => {
-    expect(where(spec({ objective: "OUTCOME_LEADS" }, [adset({ destination: "messaging", messagingApps: ["WHATSAPP"] })])).join()).toMatch(/isn't available for Leads/);
+    expect(where(spec({ objective: "OUTCOME_LEADS" }, [adset({ destination: "app" })])).join()).toMatch(/isn't available for Leads/);
+    // Leads by chat is a v26 conversion location (conversations only).
+    expect(where(spec({ objective: "OUTCOME_LEADS" }, [adset({ destination: "messaging", messagingApps: ["WHATSAPP"], optimizationGoal: "CONVERSATIONS" })])).join()).toBe("");
     expect(where(spec({ objective: "OUTCOME_TRAFFIC" }, [adset({ optimizationGoal: "VALUE" })])).join()).toMatch(/performance goal/);
     expect(where(spec({}, [adset({ destination: "messaging", messagingApps: ["INSTAGRAM_DIRECT"], optimizationGoal: "CONVERSATIONS" })])).join()).toBe("");
   });
@@ -372,6 +528,12 @@ describe("campaign builder state", () => {
     const { issues } = launchIssues(input);
     expect(issues.every((i) => i.step === "ads")).toBe(true);
     expect(issues.map((i) => i.message)).toContain("Add an image or video.");
+
+    // A name cleared by hand gets a plain message, not zod's "name: Too small…".
+    const cleared = { ...state, campaign: { ...state.campaign, name: " ", nameEdited: true } };
+    const messages = launchIssues(toLaunchInput(cleared, computeNames(cleared, { client: "Acme", account: "Acme US", dateToken: "261028", patterns: { campaignPattern: "{client}", adsetPattern: "{geo}", adPattern: "{creative}" }, creative: () => undefined }), { idempotencyKey: crypto.randomUUID(), clientId: "c1", adAccountId: "act_1", timeZone: "UTC" })).issues.map((i) => `${i.where}: ${i.message}`);
+    expect(messages).toContain("Campaign: Give the campaign a name.");
+    expect(messages.join()).not.toMatch(/name: /);
   });
 
   it("checks the picked files fit their placements and the ad sets' goals", () => {
@@ -385,6 +547,39 @@ describe("campaign builder state", () => {
     expect(check({ ...state, ads: [ad] })).toEqual([]);
     const awareness = { ...state, campaign: { ...state.campaign, objective: "OUTCOME_AWARENESS" as const }, adsets: [{ ...state.adsets[0], goal: "THRUPLAY" }], ads: [ad] };
     expect(check(awareness)).toContain("An ad set optimizes for video views, so this ad needs a video.");
+  });
+
+  it("pins an existing campaign and ad set: their settings can't drift, and only the new ads are checked", () => {
+    const state = blankState({ pageId: "111", igId: "", urlTags: "", template: { id: "t1", config } });
+    const parent: ParentView = {
+      target: { mode: "adset", campaignId: "1", adsetId: "2" },
+      campaign: { name: "Live", objective: "OUTCOME_TRAFFIC", budgetLevel: "campaign", budgetSchedule: "daily", bidStrategy: "COST_CAP", specialAdCategories: [], budget: 50, status: "ACTIVE" },
+      adset: {
+        name: "Existing",
+        destination: "website",
+        messagingApps: [],
+        goal: "LINK_CLICKS",
+        pixelId: "",
+        conversionEvent: "",
+        appId: "",
+        appStoreUrl: "",
+        attribution: { clickDays: 7, viewDays: 1, engagedViewDays: 0 },
+        // Custom-location targeting: no locations the editor understands, which must not block the new ads.
+        audience: { ...DEFAULT_AUDIENCE, locations: [] },
+        placements: DEFAULT_PLACEMENTS,
+        status: "ACTIVE",
+      },
+    };
+    const pinned = withParent(state, parent);
+    expect(pinned.campaign).toMatchObject({ name: "Live", nameEdited: true, objective: "OUTCOME_TRAFFIC", bidStrategy: "COST_CAP" });
+    expect(pinned.adsets).toHaveLength(1);
+    const ad = { ...pinned.ads[0], feedAssetId: "f", primaryTexts: ["Body"], headlines: ["Head"], url: "https://a.example" };
+    const ctx = { client: "A", account: "B", dateToken: "1", patterns: { campaignPattern: "c", adsetPattern: "s", adPattern: "a" }, creative: () => undefined };
+    const s = { ...pinned, ads: [ad] };
+    const input = toLaunchInput(s, computeNames(s, ctx), { idempotencyKey: crypto.randomUUID(), clientId: "c1", adAccountId: "act_1", timeZone: "UTC" });
+    expect(input.target).toEqual(parent.target);
+    // A cost cap would need a bid amount on a new ad set; the existing one already has whatever it has.
+    expect(launchIssues(input, () => ({ kind: "image", aspect: "1:1" })).issues).toEqual([]);
   });
 
   it("reports an impossible date instead of crashing", () => {

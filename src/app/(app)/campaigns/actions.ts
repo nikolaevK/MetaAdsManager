@@ -8,7 +8,7 @@ import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth/session";
 import { db } from "@/lib/db";
 import { toMinorUnits } from "@/lib/launch/payloads";
-import { graphBatch } from "@/lib/meta/client";
+import { graphBatchUpdate } from "@/lib/meta/client";
 import { kickWorker } from "@/lib/jobs/kick";
 import { enqueue, PRIORITY } from "@/lib/jobs/queue";
 import { duplicate, rename, setStatus, TABLES, updateBudget, type Level } from "@/lib/meta/mutations";
@@ -32,6 +32,7 @@ export async function setStatusAction(input: { level: Level; ids: string[]; stat
       .object({ level, ids: z.array(metaId).min(1).max(200), status: z.enum(["ACTIVE", "PAUSED", "ARCHIVED"]) })
       .parse(input);
     const account = await resolveAccount(data.level, data.ids);
+    // Switching off is always allowed; switching on waits for a pending launch's approval.
     if (data.status === "ACTIVE") await assertNotAwaitingApproval(data.level, data.ids);
     const before = await mirrored(data.level, data.ids);
     const res = await setStatus(data.level, data.ids, data.status, account.id);
@@ -57,6 +58,7 @@ export async function updateBudgetAction(input: { level: "campaign" | "adset"; i
       .object({ level: z.enum(["campaign", "adset"]), id: metaId, amount: z.number().positive().max(10_000_000), kind: z.enum(["daily", "lifetime"]) })
       .parse(input);
     const account = await resolveAccount(data.level, [data.id]);
+    await assertNotAwaitingApproval(data.level, [data.id]);
     const field = data.kind === "daily" ? "daily_budget" : "lifetime_budget";
     const prev = (await mirrored(data.level, [data.id])).get(data.id);
     const minor = toMinorUnits(data.amount, account.currency);
@@ -76,6 +78,7 @@ export async function renameAction(input: { level: Level; id: string; name: stri
     const user = await requireUser("buyer");
     const data = z.object({ level, id: metaId, name: z.string().trim().min(1).max(400) }).parse(input);
     const account = await resolveAccount(data.level, [data.id]);
+    await assertNotAwaitingApproval(data.level, [data.id]);
     const prev = (await mirrored(data.level, [data.id])).get(data.id);
     await rename(data.level, data.id, data.name, account.id);
     const changes: Change[] = prev ? [{ level: data.level, id: data.id, before: { name: prev.name }, after: { name: data.name } }] : [];
@@ -92,6 +95,8 @@ export async function duplicateAction(input: { level: Level; id: string }): Prom
     const user = await requireUser("buyer");
     const data = z.object({ level, id: metaId }).parse(input);
     const account = await resolveAccount(data.level, [data.id]);
+    // A copy belongs to no launch, so copying unapproved objects would let them go live without approval.
+    await assertNotAwaitingApproval(data.level, [data.id]);
     const failed = await duplicate(data.level, data.id, account.id);
     await enqueue("structure.sync", { adAccountId: account.id }, {
       dedupeKey: `structure:${account.id}`,
@@ -132,6 +137,7 @@ export async function bulkUpdateAction(input: z.input<typeof bulkSchema>): Promi
     if (data.level === "ad" && data.items.some((i) => i.budget)) throw new UserError("Ads don't have budgets.");
     const ids = data.items.map((i) => i.id);
     const account = await resolveAccount(data.level, ids);
+    await assertNotAwaitingApproval(data.level, ids);
     const before = await mirrored(data.level, ids);
 
     const planned = data.items
@@ -154,7 +160,7 @@ export async function bulkUpdateAction(input: z.input<typeof bulkSchema>): Promi
       .filter((p) => Object.keys(p.params).length > 0);
     if (planned.length === 0) return { ok: true, message: "Nothing to change" };
 
-    const results = await graphBatch(
+    const results = await graphBatchUpdate(
       planned.map((p) => ({ method: "POST" as const, relativeUrl: p.id, params: p.params })),
       { accountId: account.id },
     );

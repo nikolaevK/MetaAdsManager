@@ -3,6 +3,14 @@
 /* Dark mode is class-based (html.dark), set before paint by the theme script in app/layout.tsx. */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* Devices that can hover. Hover-only reveals use `can-hover:opacity-0 can-hover:group-hover:opacity-100` so touch
+   screens (where `hover:` never applies) always show the control. */
+@custom-variant can-hover {
+  @media (hover: hover) {
+    @slot;
+  }
+}
+
 /* ── Design tokens ──────────────────────────────────────────────────────────
    Semantic names only; components never reference raw palette values.
    Light is the default; .dark overrides every token. */
@@ -15,10 +23,13 @@
   --line: #e5e5ea;
   --line-soft: #efeff3;
   --ink: #17171c;
-  --muted: #6b6b76;
-  --faint: #a0a0ab;
+  /* Text contrast in both themes: muted ≥ 6:1 and faint ≥ 4.5:1 on canvas, surface, surface-2 and hover. */
+  --muted: #5a5a65;
+  --faint: #6e6e78;
 
   --primary: #5145e5;
+  /* Text and icons on primary / brand / danger fills. */
+  --on-primary: #ffffff;
   --primary-hover: #4338ca;
   --primary-soft: #eef0ff;
   --primary-ink: #4338ca;
@@ -62,10 +73,12 @@
   --line-soft: #1e1e25;
   --ink: #f3f3f6;
   --muted: #a1a1ad;
-  --faint: #6c6c78;
+  --faint: #858590;
 
-  --primary: #7073ff;
-  --primary-hover: #8487ff;
+  /* Darker than the chart/brand #7073ff so white button text keeps 4.5:1 (links use --primary-ink). */
+  --primary: #4d52ff;
+  --on-primary: #ffffff;
+  --primary-hover: #5c61ff;
   --primary-soft: color-mix(in oklab, #7073ff 16%, transparent);
   --primary-ink: #a5a8ff;
   --brand-from: #6366f1;
@@ -116,6 +129,7 @@
   --color-primary-hover: var(--primary-hover);
   --color-primary-soft: var(--primary-soft);
   --color-primary-ink: var(--primary-ink);
+  --color-on-primary: var(--on-primary);
   --color-brand-from: var(--brand-from);
   --color-brand-to: var(--brand-to);
   /* Legacy alias: the old green "Create" button now uses the brand treatment. */
@@ -147,6 +161,7 @@
   --animate-pop-in: pop-in 160ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
   --animate-slide-in: slide-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
   --animate-sheet-in: sheet-in 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --animate-sheet-up: sheet-up 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 @keyframes shimmer {
@@ -167,6 +182,10 @@
 }
 @keyframes sheet-in {
   from { transform: translateX(100%); }
+  to { transform: none; }
+}
+@keyframes sheet-up {
+  from { transform: translateY(100%); }
   to { transform: none; }
 }
 
@@ -195,12 +214,14 @@ body {
   background: color-mix(in oklab, var(--primary) 24%, transparent);
 }
 
-/* Controls and custom widgets (inputs, buttons, [tabindex] charts) draw their own focus rings; this
-   covers links. Kept narrow on purpose: unlayered rules here override utilities like focus:outline-none. */
-a:focus-visible,
-summary:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
+/* Controls and custom widgets draw their own focus rings (`focusRing` in components/ui.tsx); this is the
+   fallback for plain links. In the base layer so a link styled as a control can swap it for the ring. */
+@layer base {
+  a:focus-visible,
+  summary:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
 }
 
 /* Quiet scrollbars that follow the theme. */

@@ -29,6 +29,13 @@
       "when": 1793241147487,
       "tag": "0003_launch_drafts",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1793297698061,
+      "tag": "0004_indexes_for_locks_and_jobs",
+      "breakpoints": true
     }
   ]
 }

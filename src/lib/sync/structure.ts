@@ -61,6 +61,9 @@ async function upsertAll<T extends Record<string, unknown>>(table: SQLiteTable, 
 export async function syncStructure(adAccountId: string): Promise<void> {
   const startedAt = Date.now();
   const opts = { accountId: adAccountId, mode: "background" as const };
+  // A queued sync can outlive the account's connection (disconnected meanwhile): nothing to mirror then.
+  const [connected] = await db().select({ id: adAccounts.id }).from(adAccounts).where(eq(adAccounts.id, adAccountId)).limit(1);
+  if (!connected) return;
 
   const remoteCampaigns = await graphAll<RemoteCampaign>(`${adAccountId}/campaigns`, {
     ...opts,

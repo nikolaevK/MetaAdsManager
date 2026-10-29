@@ -2,32 +2,15 @@
 
 export type Level = "campaign" | "adset" | "ad";
 
-export type EditorTarget =
-  | { mode: "edit"; level: Level; id: string; name: string; tab?: "settings" | "performance" }
-  | { mode: "create"; level: Level; parentId?: string; parentHint?: ParentOptions["campaigns"][number] };
+/** What the editor sheet has open. New campaigns, ad sets and ads are made in the campaign builder. */
+export type EditorTarget = { mode: "edit"; level: Level; id: string; name: string; tab?: "settings" | "performance" };
 
-export type ParentOptions = {
-  campaigns: { id: string; name: string; objective: string | null; hasBudget: boolean; bidStrategy: string | null }[];
-  adsets: { id: string; name: string; campaignId: string }[];
-};
-
-export const CREATE_OBJECTIVES = ["OUTCOME_SALES", "OUTCOME_LEADS", "OUTCOME_TRAFFIC", "OUTCOME_AWARENESS"] as const;
-export type CreateObjective = (typeof CREATE_OBJECTIVES)[number];
-
-export const SPECIAL_AD_CATEGORIES = ["CREDIT", "EMPLOYMENT", "HOUSING", "ISSUES_ELECTIONS_POLITICS", "FINANCIAL_PRODUCTS_SERVICES"] as const;
+// CREDIT was folded into FINANCIAL_PRODUCTS_SERVICES; Meta rejects it since 2025-01-14.
+export const SPECIAL_AD_CATEGORIES = ["FINANCIAL_PRODUCTS_SERVICES", "EMPLOYMENT", "HOUSING", "ISSUES_ELECTIONS_POLITICS", "ONLINE_GAMBLING_AND_GAMING"] as const;
 
 export const BID_STRATEGIES = ["LOWEST_COST_WITHOUT_CAP", "COST_CAP", "LOWEST_COST_WITH_BID_CAP", "LOWEST_COST_WITH_MIN_ROAS"] as const;
 export type BidStrategy = (typeof BID_STRATEGIES)[number];
 export const needsBidAmount = (s: string | null | undefined) => s === "COST_CAP" || s === "LOWEST_COST_WITH_BID_CAP";
-
-/** Optimization goals the create form offers per objective (first = default). */
-export const OPTIMIZATION_BY_OBJECTIVE: Record<CreateObjective, string[]> = {
-  OUTCOME_SALES: ["OFFSITE_CONVERSIONS", "VALUE", "LANDING_PAGE_VIEWS", "LINK_CLICKS"],
-  OUTCOME_LEADS: ["OFFSITE_CONVERSIONS", "LANDING_PAGE_VIEWS", "LINK_CLICKS"],
-  OUTCOME_TRAFFIC: ["LANDING_PAGE_VIEWS", "LINK_CLICKS", "REACH", "IMPRESSIONS"],
-  OUTCOME_AWARENESS: ["REACH", "IMPRESSIONS", "AD_RECALL_LIFT", "THRUPLAY"],
-};
-export const usesPixel = (goal: string) => goal === "OFFSITE_CONVERSIONS" || goal === "VALUE";
 
 // ── Audience ─────────────────────────────────────────────────────────────────
 
@@ -47,12 +30,17 @@ export type Audience = {
   customAudiences: AudienceRef[];
   excludedCustomAudiences: AudienceRef[];
   advantageAudience: boolean;
+  /** Advantage detailed targeting: reach beyond the detailed targeting when it's likely to improve results. */
+  advantageDetailed?: boolean;
 };
 
-export const FB_POSITIONS = ["feed", "profile_feed", "marketplace", "video_feeds", "right_hand_column", "search", "instream_video", "story", "facebook_reels", "facebook_reels_overlay"] as const;
-export const IG_POSITIONS = ["stream", "profile_feed", "explore", "explore_home", "ig_search", "story", "reels"] as const;
+// Positions Meta still accepts in v26. Gone: Facebook video_feeds (v24), Instagram explore (v26), and Messenger's
+// inbox and stories (only stand-alone sponsored messages remain, which can't be combined with other placements).
+export const FB_POSITIONS = ["feed", "profile_feed", "marketplace", "right_hand_column", "search", "instream_video", "notification", "story", "facebook_reels", "facebook_reels_overlay"] as const;
+export const IG_POSITIONS = ["stream", "profile_feed", "explore_home", "ig_search", "story", "reels", "profile_reels"] as const;
 export const AN_POSITIONS = ["classic", "rewarded_video"] as const;
-export const MESSENGER_POSITIONS = ["messenger_home", "story"] as const;
+/** Positions an ad set may still carry from before but that Meta now rejects in any create or update. */
+export const REMOVED_POSITIONS = { facebook: ["video_feeds"], instagram: ["explore"], messenger: ["messenger_home", "story"] } as const;
 
 export type Placements = {
   automatic: boolean;
@@ -116,7 +104,16 @@ export type AdsetData = {
   issues: Issue[];
 };
 
-export type AdCopy = { primaryText: string; headline: string; description: string; url: string; cta: string; urlTags: string };
+/** An existing ad's editable text and link. Each text list holds the ad's text options (Meta shows the best per person). */
+export type AdCopy = {
+  primaryTexts: string[];
+  headlines: string[];
+  description: string;
+  url: string;
+  displayLink: string;
+  cta: string;
+  urlTags: string;
+};
 
 export type AdData = {
   id: string;
@@ -129,51 +126,25 @@ export type AdData = {
   creativeId: string | null;
   creativeName: string | null;
   thumbnailUrl: string | null;
-  format: "image" | "video" | "flexible" | "post" | "unknown";
+  format: "image" | "video" | "flexible" | "placement" | "carousel" | "post" | "unknown";
   pageId: string | null;
   instagramUserId: string | null;
   copy: AdCopy;
   /** False for ads built from an existing post or a format we can't safely rebuild. */
   copyEditable: boolean;
+  /** Text options this creative's format accepts, and whether their number is fixed (texts tied to placements). */
+  maxTexts: number;
+  fixedTexts: boolean;
+  /** Clicks go to a website (not a chat, form, call or app), so URL, display link and call to action are editable. */
+  website: boolean;
+  /** Advantage+ creative enhancements currently switched on. */
+  features: string[];
   review: string[];
   issues: Issue[];
   createdTime: string | null;
 };
 
 export type LoadResult<T> = { ok: true; data: T } | { ok: false; error: string };
-
-// ── Create inputs ────────────────────────────────────────────────────────────
-
-export type AdsetInput = {
-  campaignId: string;
-  name: string;
-  optimizationGoal: string;
-  pixelId?: string;
-  conversionEvent?: string;
-  budgetType: "daily" | "lifetime";
-  budget?: number;
-  bidStrategy: BidStrategy;
-  bidAmount?: number;
-  roasFloor?: number;
-  startTime?: string;
-  endTime?: string;
-  attribution: "7d_click_1d_view" | "7d_click" | "1d_click" | "1d_click_1d_view";
-  audience: Audience;
-  placements: Placements;
-};
-
-export type AdInput = {
-  adsetId: string;
-  name: string;
-  pageId: string;
-  instagramUserId?: string;
-  libraryCreativeId: string;
-  copy: AdCopy;
-};
-
-export type LibraryAsset = { id: string; kind: "image" | "video"; fileName: string; width: number | null; height: number | null; aspect: string };
-
-export type LibraryCreative = { id: string; name: string; kind: "image" | "video"; single: boolean; assetId: string; verticalAssetId: string };
 
 export const DEFAULT_AUDIENCE: Audience = {
   locations: [{ kind: "country", key: "US", name: "United States" }],
@@ -191,8 +162,8 @@ export const DEFAULT_AUDIENCE: Audience = {
 export const DEFAULT_PLACEMENTS: Placements = {
   automatic: true,
   platforms: ["facebook", "instagram"],
-  facebook: ["feed", "profile_feed", "video_feeds", "story", "facebook_reels", "marketplace", "search"],
-  instagram: ["stream", "profile_feed", "explore", "explore_home", "story", "reels"],
+  facebook: ["feed", "profile_feed", "story", "facebook_reels", "marketplace", "search"],
+  instagram: ["stream", "profile_feed", "story", "reels", "profile_reels"],
   audienceNetwork: [],
   messenger: [],
   devices: ["mobile", "desktop"],

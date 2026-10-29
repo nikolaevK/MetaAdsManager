@@ -13,8 +13,10 @@ export type Client = typeof clients.$inferSelect;
 
 /** Authenticated user + the client / ad account currently selected in the top bar. */
 export const getWorkspace = cache(async () => {
-  const user = await requireUser();
-  const [clientList, accountList, jar] = await Promise.all([
+  // The session check runs alongside the lists (one database round trip instead of two on every page);
+  // nothing from the lists is returned unless it passes.
+  const [user, clientList, accountList, jar] = await Promise.all([
+    requireUser(),
     db().select().from(clients).orderBy(asc(clients.name)),
     db().select().from(adAccounts).orderBy(asc(adAccounts.name)),
     cookies(),

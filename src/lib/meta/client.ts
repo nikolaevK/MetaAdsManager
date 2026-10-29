@@ -18,11 +18,24 @@ export type GraphOptions = {
   timeoutMs?: number;
   /** Video uploads go to graph-video.facebook.com. */
   host?: "graph" | "video";
+  /** A Page access token for Page-scoped edges (e.g. lead forms); defaults to the system-user token. Never logged or stored. */
+  token?: string;
 };
 
 const VIDEO_BASE = "https://graph-video.facebook.com";
 const BASE = "https://graph.facebook.com";
 const DEFAULT_THROTTLE_BACKOFF_MS = 5 * 60_000;
+
+/**
+ * META_GRAPH_BASE_URL points calls at a local mock for testing. The real token would be sent to it too, so it's
+ * ignored in production and limited to loopback hosts.
+ */
+function mockBase(): string | undefined {
+  const url = env().META_GRAPH_BASE_URL;
+  if (!url || process.env.NODE_ENV === "production") return undefined;
+  const host = new URL(url).hostname;
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]" ? url : undefined;
+}
 
 function appsecretProof(token: string): string | undefined {
   const secret = env().META_APP_SECRET;
@@ -40,9 +53,9 @@ export function encodeParams(params: Params = {}): URLSearchParams {
 }
 
 async function send(path: string, opts: GraphOptions): Promise<Response> {
-  const token = requireMetaToken();
+  const token = opts.token ?? requireMetaToken();
   const method = opts.method ?? "GET";
-  const base = env().META_GRAPH_BASE_URL ?? (opts.host === "video" ? VIDEO_BASE : BASE);
+  const base = mockBase() ?? (opts.host === "video" ? VIDEO_BASE : BASE);
   const url = new URL(`${base}/${env().META_API_VERSION}/${path.replace(/^\//, "")}`);
   const proof = appsecretProof(token);
   if (proof) url.searchParams.set("appsecret_proof", proof);
@@ -180,6 +193,27 @@ export async function graphBatch<T = unknown>(
       if (item.code >= 400 || errBody) results.push({ ok: false, error: new MetaApiError(item.code, errBody) });
       else results.push({ ok: true, data: body as T });
     }
+  }
+  return results;
+}
+
+const UPDATE_RETRY_MS = [1_500, 4_000];
+
+/**
+ * graphBatch for idempotent updates (status, budget, name): items that failed with a temporary Meta error
+ * (code 1/2, or left unfinished by Meta) are sent again, up to twice. Never use it for creates.
+ */
+export async function graphBatchUpdate<T = unknown>(
+  requests: BatchRequest[],
+  opts: Pick<GraphOptions, "accountId" | "mode"> = {},
+): Promise<BatchResult<T>[]> {
+  const results = await graphBatch<T>(requests, opts);
+  for (const wait of UPDATE_RETRY_MS) {
+    const again = results.flatMap((r, k) => (!r.ok && r.error.isTransient && !r.error.isRateLimit ? [k] : []));
+    if (again.length === 0) break;
+    await new Promise((r) => setTimeout(r, wait));
+    const retried = await graphBatch<T>(again.map((k) => requests[k]), opts);
+    again.forEach((k, i) => (results[k] = retried[i]));
   }
   return results;
 }

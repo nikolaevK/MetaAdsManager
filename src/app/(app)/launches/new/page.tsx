@@ -1,17 +1,25 @@
+import { and, eq } from "drizzle-orm";
 import { Lock } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
 import { NoAccount } from "@/components/no-account";
 import { Alert, buttonClass, Card, EmptyState, PageHeader, PageSkeleton } from "@/components/ui";
+import { failure } from "@/lib/action-result";
 import { hasRole } from "@/lib/auth/session";
+import { db } from "@/lib/db";
+import { adsets } from "@/lib/db/schema";
 import { todayIn } from "@/lib/dates";
-import { blankState, hydrate } from "@/lib/launch/draft";
+import { blankState, hydrate, withParent, type BuilderState, type ParentView } from "@/lib/launch/draft";
 import { formatDateToken } from "@/lib/launch/naming";
+import { loadLaunchParent } from "@/lib/launch/parent";
+import type { LaunchTarget } from "@/lib/launch/spec";
 import { buildUrlTags } from "@/lib/launch/utm";
 import { PREVIEW_FORMATS } from "@/lib/meta/previews";
 import { getBuilderData, getDraft } from "@/lib/queries/launches";
-import { getWorkspace } from "@/lib/workspace";
+import { getParentOptions } from "@/lib/queries/manage";
+import { getWorkspace, type Account } from "@/lib/workspace";
+import { AddTargetPicker } from "./add-target-picker";
 import { LaunchBuilder } from "./builder";
 
 export const metadata: Metadata = { title: "Campaign builder" };
@@ -22,6 +30,71 @@ export default function NewLaunchPage(props: PageProps<"/launches/new">) {
       <NewLaunch searchParams={props.searchParams} />
     </Suspense>
   );
+}
+
+const metaIdParam = (v: unknown) => (typeof v === "string" && /^\d{1,32}$/.test(v) ? v : null);
+
+const TITLES: Record<LaunchTarget["mode"], { title: string; description: string }> = {
+  new: {
+    title: "Campaign builder",
+    description: "Build the campaign, its ad sets and ads step by step. Your draft saves as you go; everything is created paused, previewed, then approved.",
+  },
+  campaign: {
+    title: "Add ad sets",
+    description: "Add new ad sets and their ads to an existing campaign. They're created paused, previewed, then approved; the campaign itself doesn't change.",
+  },
+  adset: {
+    title: "Add ads",
+    description: "Add new ads to an existing ad set. They're created paused, previewed, then approved; the ad set itself doesn't change.",
+  },
+};
+
+/** The existing campaign / ad set named in the URL (?campaign= or ?adset=), if any. */
+async function targetFromParams(sp: Record<string, string | string[] | undefined>, account: Account): Promise<LaunchTarget> {
+  const adsetId = metaIdParam(sp.adset);
+  if (adsetId) {
+    const [row] = await db()
+      .select({ campaignId: adsets.campaignId })
+      .from(adsets)
+      .where(and(eq(adsets.id, adsetId), eq(adsets.adAccountId, account.id)))
+      .limit(1);
+    // Unknown ids fall through to loadLaunchParent, which explains the problem.
+    return { mode: "adset", adsetId, campaignId: row?.campaignId ?? "0" };
+  }
+  const campaignId = metaIdParam(sp.campaign);
+  return campaignId ? { mode: "campaign", campaignId } : { mode: "new" };
+}
+
+function parentView(target: Exclude<LaunchTarget, { mode: "new" }>, p: Awaited<ReturnType<typeof loadLaunchParent>>): ParentView {
+  const c = p.campaign;
+  const s = p.adset;
+  return {
+    target,
+    campaign: {
+      name: c.name,
+      objective: c.objective,
+      budgetLevel: c.budgetLevel,
+      budgetSchedule: c.budgetSchedule,
+      bidStrategy: c.bidStrategy,
+      specialAdCategories: c.specialAdCategories,
+      budget: p.campaignBudget,
+      status: p.campaignStatus,
+    },
+    adset: s && {
+      name: s.name,
+      destination: s.destination,
+      messagingApps: s.messagingApps,
+      goal: s.optimizationGoal,
+      pixelId: s.pixelId ?? "",
+      conversionEvent: s.conversionEvent ?? "",
+      appId: s.app?.id ?? "",
+      appStoreUrl: s.app?.storeUrl ?? "",
+      attribution: s.attribution,
+      audience: s.audience,
+      placements: s.placements,
+      status: p.adsetStatus ?? "",
+    },
+  };
 }
 
 async function NewLaunch({ searchParams }: { searchParams: PageProps<"/launches/new">["searchParams"] }) {
@@ -48,19 +121,65 @@ async function NewLaunch({ searchParams }: { searchParams: PageProps<"/launches/
   // A draft belongs to one ad account; it only opens while that account is selected.
   const draftHere = draft && draft.clientId === account.clientId && draft.adAccountId === account.id ? draft : null;
   const blank = blankState({ pageId: account.defaultPageId ?? "", igId: account.defaultInstagramUserId ?? "", urlTags, template: data.templates[0] });
-  const initialState = draftHere ? hydrate(draftHere.state, blank) : blank;
+  let initialState: BuilderState = draftHere ? hydrate(draftHere.state, blank) : blank;
+
+  // Adding to an existing campaign / ad set: from the draft, or from the URL for a fresh builder.
+  const target = draftHere ? initialState.target : await targetFromParams(sp, account);
+  const add = sp.add === "adsets" || sp.add === "ads" ? sp.add : null;
+  const { title, description } = TITLES[target.mode !== "new" ? target.mode : add === "ads" ? "adset" : add === "adsets" ? "campaign" : "new"];
+  const header = (
+    <PageHeader
+      title={title}
+      description={description}
+      actions={
+        <Link href="/launches" className={buttonClass("secondary", "sm")}>
+          Close
+        </Link>
+      }
+    />
+  );
+
+  if (target.mode === "new" && add && !draftHere) {
+    return (
+      <div className="mx-auto max-w-6xl">
+        {header}
+        <AddTargetPicker level={add} options={await getParentOptions(account.id)} />
+      </div>
+    );
+  }
+
+  let parent: ParentView | null = null;
+  if (target.mode !== "new") {
+    try {
+      parent = parentView(target, await loadLaunchParent(account, target));
+    } catch (err) {
+      return (
+        <div className="mx-auto max-w-6xl">
+          {header}
+          <Alert tone="danger" title={target.mode === "campaign" ? "Can't add ad sets to that campaign" : "Can't add ads to that ad set"}>
+            {failure(err)?.error ?? "It couldn't be loaded from Meta."}
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Link href="/launches/new" className={buttonClass("secondary", "sm")}>
+                Build a new campaign instead
+              </Link>
+              {draftHere && (
+                <Link href="/launches" className={buttonClass("ghost", "sm")}>
+                  Back to launches (the draft is kept)
+                </Link>
+              )}
+            </div>
+          </Alert>
+        </div>
+      );
+    }
+    initialState = withParent(initialState, parent);
+    // A fresh builder opens on the first step there is something to fill in.
+    if (!draftHere) initialState = { ...initialState, step: target.mode === "adset" ? 2 : 1 };
+  }
 
   return (
     <div className="mx-auto max-w-6xl">
-      <PageHeader
-        title="Campaign builder"
-        description="Build the campaign, its ad sets and ads step by step. Your draft saves as you go; everything is created paused, previewed, then approved."
-        actions={
-          <Link href="/launches" className={buttonClass("secondary", "sm")}>
-            Close
-          </Link>
-        }
-      />
+      {header}
       {draftParam && !draftHere && (
         <div className="mb-5">
           <Alert tone="warning" title="Draft not available here">
@@ -88,6 +207,7 @@ async function NewLaunch({ searchParams }: { searchParams: PageProps<"/launches/
         formats={PREVIEW_FORMATS}
         initialState={initialState}
         draftId={draftHere?.id ?? null}
+        parent={parent}
       />
     </div>
   );

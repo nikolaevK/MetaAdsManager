@@ -2,7 +2,7 @@
 
 import { CircleAlert, CircleCheck, Info, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { cn } from "@/components/ui";
+import { cn, focusRing } from "@/components/ui";
 
 type Tone = "info" | "success" | "error";
 type Item = { id: number; message: string; tone: Tone };
@@ -48,7 +48,7 @@ export function Toaster() {
               type="button"
               aria-label="Dismiss"
               onClick={() => setItems((p) => p.filter((i) => i.id !== t.id))}
-              className="text-faint hover:text-ink"
+              className={cn("-m-1 grid size-6 shrink-0 place-items-center rounded-md text-faint hover:text-ink pointer-coarse:-m-2.5 pointer-coarse:size-10", focusRing)}
             >
               <X className="size-4" />
             </button>

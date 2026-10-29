@@ -2,6 +2,7 @@
 
 import { Check, CheckCheck } from "lucide-react";
 import { useTransition } from "react";
+import { useConfirm } from "@/components/confirm-dialog";
 import { toast } from "@/components/toast";
 import { Button } from "@/components/ui";
 import { acknowledgeAction, acknowledgeAllAction } from "./actions";
@@ -30,13 +31,19 @@ export function AcknowledgeButton({ id }: { id: string }) {
 
 export function AcknowledgeAllButton({ accountId, count }: { accountId: string | null; count: number }) {
   const [pending, run] = useRun();
+  const confirm = useConfirm();
   return (
     <Button
       size="sm"
       variant="secondary"
       disabled={pending || count === 0}
-      onClick={() => {
-        if (confirm(`Acknowledge all ${count} open item${count === 1 ? "" : "s"}?`)) run(() => acknowledgeAllAction({ accountId }));
+      onClick={async () => {
+        const ok = await confirm({
+          title: `Acknowledge all ${count} open item${count === 1 ? "" : "s"}?`,
+          body: "They move to the history below. New rejections and issues will still show up here.",
+          confirmLabel: "Acknowledge all",
+        });
+        if (ok) run(() => acknowledgeAllAction({ accountId }));
       }}
     >
       <CheckCheck className="size-4" /> Acknowledge all

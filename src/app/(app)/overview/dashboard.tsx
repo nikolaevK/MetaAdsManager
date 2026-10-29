@@ -1,10 +1,11 @@
 "use client";
 
 import { ArrowDown, ArrowUp, ChartSpline, Check, LayoutGrid, Minus, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
+import { useLayoutEffect, useState, type ReactNode } from "react";
 import { TrendChart } from "@/components/charts/trend-chart";
+import { Modal } from "@/components/modal";
 import { toast } from "@/components/toast";
-import { Button, Card, cn } from "@/components/ui";
+import { Button, Card, cn, focusRing } from "@/components/ui";
 import { formatSpan } from "@/lib/dates";
 import { change, formatMetric, METRIC_BY_KEY, METRIC_GROUPS, METRICS, verdict, type MetricSums } from "@/lib/metrics";
 import type { OverviewPrefs } from "@/lib/preferences";
@@ -75,12 +76,13 @@ export function OverviewDashboard({ current, previous, series, previousSeries, p
                   title={`${m.description} Click to chart it.`}
                   className={cn(
                     "group relative flex h-full w-full flex-col gap-2 overflow-hidden rounded-xl border bg-surface p-4 text-left shadow-card transition-[border-color,box-shadow]",
+                    focusRing,
                     selected ? "border-primary/60 ring-4 ring-[var(--ring)]" : "border-line hover:border-[color-mix(in_oklab,var(--line)_50%,var(--muted))]",
                   )}
                 >
                   {selected && <span aria-hidden className="absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r from-brand-from to-brand-to" />}
-                  <span className="flex items-center justify-between gap-2">
-                    <span className="truncate text-[12.5px] font-medium text-muted">{m.label}</span>
+                  <span className="flex items-start justify-between gap-2">
+                    <span className="min-w-0 text-[12.5px] font-medium leading-snug text-muted">{m.label}</span>
                     {pct !== null && (
                       <span
                         className={cn(
@@ -190,11 +192,6 @@ export function OverviewDashboard({ current, previous, series, previousSeries, p
 
 function CustomizeKpis({ selected, onClose, onApply }: { selected: string[]; onClose: () => void; onApply: (keys: string[]) => void }) {
   const [keys, setKeys] = useState(selected);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
   const toggle = (k: string) => setKeys((s) => (s.includes(k) ? s.filter((x) => x !== k) : s.length >= MAX_TILES ? s : [...s, k]));
   const move = (k: string, d: number) =>
     setKeys((s) => {
@@ -207,65 +204,69 @@ function CustomizeKpis({ selected, onClose, onApply }: { selected: string[]; onC
     });
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-3 backdrop-blur-[2px]" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div role="dialog" aria-modal="true" aria-labelledby="kpi-title" className="flex max-h-[min(42rem,calc(100dvh-1.5rem))] w-full max-w-2xl animate-pop-in flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-pop">
-        <div className="flex items-start justify-between gap-3 border-b border-line-soft px-5 py-4">
-          <div>
-            <h2 id="kpi-title" className="text-[15px] font-semibold tracking-tight">
-              Customize metrics
-            </h2>
-            <p className="mt-0.5 text-[13px] text-muted">Choose up to {MAX_TILES} tiles for the overview. Saved to your account.</p>
-          </div>
-          <button type="button" aria-label="Close" onClick={onClose} className="grid size-8 place-items-center rounded-lg text-faint hover:bg-hover hover:text-ink">
-            <X className="size-4" />
-          </button>
+    <Modal
+      onClose={onClose}
+      aria-labelledby="kpi-title"
+      className="flex max-h-[min(42rem,calc(100dvh-1.5rem))] w-full max-w-2xl animate-pop-in flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-pop"
+    >
+      <div className="flex items-start justify-between gap-3 border-b border-line-soft px-5 py-4">
+        <div>
+          <h2 id="kpi-title" className="text-[15px] font-semibold tracking-tight">
+            Customize metrics
+          </h2>
+          <p className="mt-0.5 text-[13px] text-muted">Choose up to {MAX_TILES} tiles for the overview. Saved to your account.</p>
         </div>
-        <div className="grid min-h-0 flex-1 sm:grid-cols-[1fr_15rem]">
-          <div className="min-h-0 overflow-y-auto p-4 max-sm:max-h-[40dvh]">
-            {METRIC_GROUPS.map((g) => (
-              <fieldset key={g} className="mb-4 last:mb-0">
-                <legend className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-faint">{g}</legend>
-                <div className="grid gap-0.5 sm:grid-cols-2">
-                  {METRICS.filter((m) => m.group === g).map((m) => {
-                    const on = keys.includes(m.key);
-                    return (
-                      <label key={m.key} title={m.description} className={cn("flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] hover:bg-hover", !on && keys.length >= MAX_TILES && "opacity-50")}>
-                        <input type="checkbox" checked={on} disabled={!on && keys.length >= MAX_TILES} onChange={() => toggle(m.key)} className="size-4 accent-primary" />
-                        {m.label}
-                      </label>
-                    );
-                  })}
-                </div>
-              </fieldset>
-            ))}
-          </div>
-          <ol className="min-h-0 overflow-y-auto border-line-soft bg-surface-2/60 p-3 max-sm:border-t sm:border-l">
-            <li className="px-1 pb-2 text-[12px] font-medium text-muted">
-              {keys.length}/{MAX_TILES} tiles
-            </li>
-            {keys.map((k, i) => (
-              <li key={k} className="mb-1 flex items-center gap-1 rounded-lg bg-surface px-2 py-1 text-[13px] shadow-xs">
-                <span className="tabular w-4 text-[11px] text-faint">{i + 1}</span>
-                <span className="min-w-0 flex-1 truncate">{METRIC_BY_KEY.get(k)?.label}</span>
-                <button type="button" aria-label="Move up" disabled={i === 0} onClick={() => move(k, -1)} className="grid size-6 place-items-center rounded text-faint hover:bg-hover hover:text-ink disabled:opacity-30">
-                  <ArrowUp className="size-3.5" />
-                </button>
-                <button type="button" aria-label="Move down" disabled={i === keys.length - 1} onClick={() => move(k, 1)} className="grid size-6 place-items-center rounded text-faint hover:bg-hover hover:text-ink disabled:opacity-30">
-                  <ArrowDown className="size-3.5" />
-                </button>
-              </li>
-            ))}
-          </ol>
-        </div>
-        <div className="flex justify-end gap-2 border-t border-line-soft px-5 py-3">
-          <Button variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button variant="primary" disabled={keys.length === 0} onClick={() => onApply(keys)}>
-            <Check /> Save layout
-          </Button>
-        </div>
+        <button type="button" aria-label="Close" onClick={onClose} className={cn("grid size-8 shrink-0 place-items-center rounded-lg text-faint hover:bg-hover hover:text-ink pointer-coarse:size-10", focusRing)}>
+          <X className="size-4" />
+        </button>
       </div>
-    </div>
+      <div className="grid grid-cols-1 min-h-0 flex-1 sm:grid-cols-[1fr_15rem]">
+        <div className="min-h-0 overflow-y-auto p-4 max-sm:max-h-[40dvh]">
+          {METRIC_GROUPS.map((g) => (
+            <fieldset key={g} className="mb-4 last:mb-0">
+              <legend className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-faint">{g}</legend>
+              <div className="grid grid-cols-1 gap-0.5 sm:grid-cols-2">
+                {METRICS.filter((m) => m.group === g).map((m) => {
+                  const on = keys.includes(m.key);
+                  return (
+                    <label key={m.key} title={m.description} className={cn("flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] hover:bg-hover pointer-coarse:py-2.5", !on && keys.length >= MAX_TILES && "opacity-50")}>
+                      <input type="checkbox" checked={on} disabled={!on && keys.length >= MAX_TILES} onChange={() => toggle(m.key)} className="size-4 accent-primary" />
+                      {m.label}
+                    </label>
+                  );
+                })}
+              </div>
+            </fieldset>
+          ))}
+        </div>
+        <ol className="min-h-0 overflow-y-auto border-line-soft bg-surface-2/60 p-3 max-sm:border-t sm:border-l">
+          <li className="px-1 pb-2 text-[12px] font-medium text-muted">
+            {keys.length}/{MAX_TILES} tiles
+          </li>
+          {keys.map((k, i) => (
+            <li key={k} className="mb-1 flex items-center gap-1 rounded-lg bg-surface px-2 py-1 text-[13px] shadow-xs">
+              <span className="tabular w-4 text-[11px] text-faint">{i + 1}</span>
+              <span className="min-w-0 flex-1 truncate">{METRIC_BY_KEY.get(k)?.label}</span>
+              <button type="button" aria-label={`Move ${METRIC_BY_KEY.get(k)?.label ?? k} up`} disabled={i === 0} onClick={() => move(k, -1)} className={moveButton}>
+                <ArrowUp className="size-3.5" />
+              </button>
+              <button type="button" aria-label={`Move ${METRIC_BY_KEY.get(k)?.label ?? k} down`} disabled={i === keys.length - 1} onClick={() => move(k, 1)} className={moveButton}>
+                <ArrowDown className="size-3.5" />
+              </button>
+            </li>
+          ))}
+        </ol>
+      </div>
+      <div className="flex justify-end gap-2 border-t border-line-soft px-5 py-3">
+        <Button variant="ghost" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button variant="primary" disabled={keys.length === 0} onClick={() => onApply(keys)}>
+          <Check /> Save layout
+        </Button>
+      </div>
+    </Modal>
   );
 }
+
+const moveButton = cn("grid size-6 shrink-0 place-items-center rounded text-faint hover:bg-hover hover:text-ink disabled:opacity-30 pointer-coarse:size-10", focusRing);

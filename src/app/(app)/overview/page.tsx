@@ -89,7 +89,7 @@ async function Overview({ searchParams }: { searchParams: PageProps<"/overview">
           </ul>
         </section>
 
-        <div className="grid gap-5 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
           <Card>
             <CardHeader icon={PieChart} title="Spend mix" description="Where the budget went in this period" />
             <div className="p-4 sm:p-5">
@@ -114,7 +114,7 @@ async function Overview({ searchParams }: { searchParams: PageProps<"/overview">
                 </Link>
               }
             />
-            <ul className="grid gap-px bg-line-soft sm:grid-cols-2 xl:grid-cols-3">
+            <ul className="grid grid-cols-1 gap-px bg-line-soft sm:grid-cols-2 xl:grid-cols-3">
               {data.topAds.map((a) => {
                 const d = delivery(a.status);
                 return (
@@ -191,10 +191,10 @@ async function Overview({ searchParams }: { searchParams: PageProps<"/overview">
                     return (
                       <tr key={c.id} className="group transition-colors hover:bg-hover/60">
                         <td className={cn(td, "pl-5 pr-3")}>
-                          <Link href={campaignHref(c.id)} className="flex min-w-48 max-w-80 items-center gap-2.5 font-medium text-ink transition-colors hover:text-primary" title={c.name}>
+                          <Link href={campaignHref(c.id)} className="flex min-w-48 max-w-80 items-center gap-2.5 font-medium text-ink transition-colors hover:text-primary-ink" title={c.name}>
                             <span className="tabular grid size-6 shrink-0 place-items-center rounded-md border border-line-soft bg-surface-2 text-[11px] font-medium text-muted">{i + 1}</span>
                             <span className="truncate">{c.name}</span>
-                            <ChevronRight aria-hidden className="size-3.5 shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
+                            <ChevronRight aria-hidden className="size-3.5 shrink-0 text-faint transition-opacity can-hover:opacity-0 can-hover:group-hover:opacity-100" />
                           </Link>
                         </td>
                         <td className={cn(td, "whitespace-nowrap px-3 text-ink")}>

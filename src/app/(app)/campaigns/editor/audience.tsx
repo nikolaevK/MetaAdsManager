@@ -10,7 +10,6 @@ import {
   AN_POSITIONS,
   FB_POSITIONS,
   IG_POSITIONS,
-  MESSENGER_POSITIONS,
   type Audience,
   type AudienceRef,
   type DetailedItem,
@@ -40,7 +39,6 @@ const DETAILED_TYPE: Record<string, string> = {
 export function AudienceEditor({ value, onChange, accountId, disabled }: { value: Audience; onChange: (a: Audience) => void; accountId: string; disabled?: boolean }) {
   const set = <K extends keyof Audience>(k: K, v: Audience[K]) => onChange({ ...value, [k]: v });
   const [showExcludedGeo, setShowExcludedGeo] = useState(value.excludedLocations.length > 0);
-  const [showExcludedDetailed, setShowExcludedDetailed] = useState(value.detailedExcluded.length > 0);
   const geoKey = (g: GeoItem) => `${g.kind}:${g.key}`;
   const geoTaken = new Set([...value.locations, ...value.excludedLocations].map(geoKey));
   const detailedTaken = new Set([...value.detailed, ...value.detailedExcluded].map((d) => d.id));
@@ -140,7 +138,7 @@ export function AudienceEditor({ value, onChange, accountId, disabled }: { value
         )}
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Field label="Age">
           <div className="flex items-center gap-2">
             <Select aria-label="Minimum age" value={value.ageMin} disabled={disabled} onChange={(e) => set("ageMin", Number(e.target.value))}>
@@ -151,7 +149,7 @@ export function AudienceEditor({ value, onChange, accountId, disabled }: { value
               ))}
             </Select>
             <span className="text-faint">–</span>
-            <Select aria-label="Maximum age" value={value.ageMax} disabled={disabled} onChange={(e) => set("ageMax", Number(e.target.value))}>
+            <Select aria-label="Maximum age" value={value.advantageAudience ? 65 : value.ageMax} disabled={disabled || value.advantageAudience} onChange={(e) => set("ageMax", Number(e.target.value))}>
               {AGES.map((a) => (
                 <option key={a} value={a}>
                   {a === 65 ? "65+" : a}
@@ -174,7 +172,10 @@ export function AudienceEditor({ value, onChange, accountId, disabled }: { value
           />
         </Field>
       </div>
-      {value.ageMin > value.ageMax && <p className="-mt-2 text-[12.5px] text-danger-ink">Max age must be at least the min age.</p>}
+      {value.ageMin > value.ageMax && !value.advantageAudience && <p className="-mt-2 text-[12.5px] text-danger-ink">Max age must be at least the min age.</p>}
+      {value.advantageAudience && value.ageMin > 25 && (
+        <p className="-mt-2 text-[12.5px] text-danger-ink">With Advantage+ audience the minimum age can be at most 25. Lower it, or turn Advantage+ audience off.</p>
+      )}
 
       <div className="flex flex-col gap-2">
         <span className="text-[13px] font-medium">Detailed targeting</span>
@@ -198,18 +199,19 @@ export function AudienceEditor({ value, onChange, accountId, disabled }: { value
             ))}
           </div>
         )}
-        {showExcludedDetailed ? (
+        {value.detailed.length > 0 && !value.advantageAudience && (
+          <div className="flex items-start justify-between gap-4 rounded-lg border border-line px-3 py-2.5">
+            <div className="min-w-0">
+              <p className="text-[13px] font-medium">Advantage detailed targeting</p>
+              <p className="mt-0.5 text-[12.5px] text-muted">Reach people beyond these interests when it&apos;s likely to improve results.</p>
+            </div>
+            <Switch on={!!value.advantageDetailed} disabled={disabled} label="Advantage detailed targeting" onChange={(on) => set("advantageDetailed", on)} />
+          </div>
+        )}
+        {value.detailedExcluded.length > 0 && (
+          // Meta stopped accepting new detailed-targeting exclusions in April 2025; ones saved before can only be removed.
           <div className="mt-1 flex flex-col gap-2 rounded-lg border border-dashed border-line p-3">
-            <span className="text-[12.5px] font-medium text-muted">Exclude people who match</span>
-            <SearchPicker<DetailedItem>
-              placeholder="Search to exclude"
-              search={(q) => searchDetailedAction(accountId, q)}
-              render={renderDetailed}
-              keyOf={(d) => d.id}
-              exclude={detailedTaken}
-              disabled={disabled}
-              onPick={(d) => set("detailedExcluded", [...value.detailedExcluded, d])}
-            />
+            <span className="text-[12.5px] font-medium text-muted">Excluded (saved before Meta retired detailed exclusions; can only be removed)</span>
             <div className="flex flex-wrap gap-1.5">
               {value.detailedExcluded.map((d) => (
                 <Chip key={d.id} tone="exclude" onRemove={disabled ? undefined : () => set("detailedExcluded", value.detailedExcluded.filter((x) => x.id !== d.id))}>
@@ -218,12 +220,6 @@ export function AudienceEditor({ value, onChange, accountId, disabled }: { value
               ))}
             </div>
           </div>
-        ) : (
-          !disabled && (
-            <button type="button" onClick={() => setShowExcludedDetailed(true)} className="w-fit text-[12.5px] font-medium text-primary-ink hover:underline">
-              + Exclude interests or behaviors
-            </button>
-          )
         )}
       </div>
 
@@ -235,7 +231,7 @@ export function AudienceEditor({ value, onChange, accountId, disabled }: { value
             <Sparkles className="size-3.5 text-primary" aria-hidden /> Advantage+ audience
           </p>
           <p className="mt-0.5 text-[12.5px] text-muted">
-            Let Meta reach beyond your detailed targeting when it&apos;s likely to improve results. Your settings become suggestions; locations, minimum age and exclusions stay strict.
+            Let Meta reach beyond your detailed targeting when it&apos;s likely to improve results. Your settings become suggestions; locations, minimum age (up to 25) and excluded audiences stay strict, and the maximum age isn&apos;t used.
           </p>
         </div>
         <Switch on={value.advantageAudience} disabled={disabled} label="Advantage+ audience" onChange={(on) => set("advantageAudience", on)} />
@@ -339,19 +335,21 @@ const EXTRA_LABELS: Record<string, string> = {
   facebook_reels_overlay: "Ads on Reels",
   classic: "Native, banner & interstitial",
   rewarded_video: "Rewarded videos",
-  messenger_home: "Inbox",
 };
 const positionLabel = (p: string) => EXTRA_LABELS[p] ?? POSITION_LABELS[p] ?? p;
 
+// Messenger isn't offered: its inbox and stories placements are gone, and sponsored messages can't be combined
+// with other placements. Ad sets that still list Messenger keep it until their placements are edited.
 const PLATFORM_POSITIONS = {
   facebook: { field: "facebook", options: FB_POSITIONS },
   instagram: { field: "instagram", options: IG_POSITIONS },
   audience_network: { field: "audienceNetwork", options: AN_POSITIONS },
-  messenger: { field: "messenger", options: MESSENGER_POSITIONS },
 } as const;
+type OfferedPlatform = keyof typeof PLATFORM_POSITIONS;
+const offered = (pl: Placements["platforms"][number]): pl is OfferedPlatform => pl in PLATFORM_POSITIONS;
 
 export function PlacementsEditor({ value, onChange, disabled }: { value: Placements; onChange: (p: Placements) => void; disabled?: boolean }) {
-  const togglePlatform = (pl: Placements["platforms"][number]) => {
+  const togglePlatform = (pl: OfferedPlatform) => {
     const on = value.platforms.includes(pl);
     const { field, options } = PLATFORM_POSITIONS[pl];
     onChange({
@@ -361,14 +359,14 @@ export function PlacementsEditor({ value, onChange, disabled }: { value: Placeme
       [field]: on ? [] : value[field].length ? value[field] : [...options],
     });
   };
-  const togglePosition = (field: "facebook" | "instagram" | "audienceNetwork" | "messenger", p: string) =>
+  const togglePosition = (field: "facebook" | "instagram" | "audienceNetwork", p: string) =>
     onChange({ ...value, [field]: value[field].includes(p) ? value[field].filter((x) => x !== p) : [...value[field], p] });
 
-  const anyPosition = value.platforms.some((pl) => value[PLATFORM_POSITIONS[pl].field].length > 0);
+  const anyPosition = value.platforms.some((pl) => offered(pl) && value[PLATFORM_POSITIONS[pl].field].length > 0);
 
   return (
     <Section title="Placements" icon={LayoutPanelTop} description="Where ads appear across Meta's apps.">
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {[
           { auto: true, title: "Advantage+ placements", body: "Recommended. Meta spreads budget across placements where results are likely cheapest." },
           { auto: false, title: "Manual placements", body: "Pick the exact platforms and positions. Fewer placements usually means higher costs." },
@@ -392,7 +390,7 @@ export function PlacementsEditor({ value, onChange, disabled }: { value: Placeme
 
       {!value.automatic && (
         <div className="flex flex-col gap-3">
-          {(Object.keys(PLATFORM_POSITIONS) as Placements["platforms"][number][]).map((pl) => {
+          {(Object.keys(PLATFORM_POSITIONS) as OfferedPlatform[]).map((pl) => {
             const { field, options } = PLATFORM_POSITIONS[pl];
             const on = value.platforms.includes(pl);
             return (
@@ -403,7 +401,7 @@ export function PlacementsEditor({ value, onChange, disabled }: { value: Placeme
                   {on && <span className="ml-auto text-[12px] text-faint">{value[field].length} of {options.length} positions</span>}
                 </label>
                 {on && (
-                  <div className="grid gap-1 border-t border-line-soft px-3 py-2.5 sm:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-1 border-t border-line-soft px-3 py-2.5 sm:grid-cols-2">
                     {options.map((p) => (
                       <label key={p} className="flex cursor-pointer items-center gap-2 text-[12.5px]">
                         <input type="checkbox" checked={value[field].includes(p)} disabled={disabled} onChange={() => togglePosition(field, p)} className="size-3.5 accent-primary" />
@@ -440,4 +438,4 @@ export function PlacementsEditor({ value, onChange, disabled }: { value: Placeme
 }
 
 export const placementsValid = (p: Placements) =>
-  p.automatic || p.platforms.some((pl) => p[PLATFORM_POSITIONS[pl].field].length > 0);
+  p.automatic || p.platforms.some((pl) => offered(pl) && p[PLATFORM_POSITIONS[pl].field].length > 0);

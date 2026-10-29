@@ -2,7 +2,7 @@
 
 import { Monitor, Moon, Sun } from "lucide-react";
 import { useSyncExternalStore } from "react";
-import { cn } from "@/components/ui";
+import { cn, focusRing } from "@/components/ui";
 
 export type Theme = "light" | "dark" | "system";
 
@@ -67,7 +67,8 @@ export function ThemeSwitch({ className }: { className?: string }) {
             aria-label={LABEL[t]}
             onClick={() => setTheme(t)}
             className={cn(
-              "grid size-6 place-items-center rounded-md transition-colors",
+              "grid size-6 place-items-center rounded-md transition-colors pointer-coarse:size-10",
+              focusRing,
               theme === t ? "bg-surface text-ink shadow-card ring-1 ring-line" : "text-faint hover:text-ink",
             )}
           >

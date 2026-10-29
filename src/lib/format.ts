@@ -64,7 +64,7 @@ export const DELIVERY: Record<string, { label: string; tone: "success" | "muted"
   PENDING_REVIEW: { label: "In review", tone: "warning" },
   PREAPPROVED: { label: "Preapproved", tone: "info" },
   DISAPPROVED: { label: "Rejected", tone: "danger" },
-  WITH_ISSUES: { label: "Error", tone: "danger" },
+  WITH_ISSUES: { label: "With issues", tone: "danger" },
   PENDING_BILLING_INFO: { label: "Pending billing", tone: "warning" },
   ARCHIVED: { label: "Archived", tone: "muted" },
   DELETED: { label: "Deleted", tone: "muted" },
@@ -72,4 +72,15 @@ export const DELIVERY: Record<string, { label: string; tone: "success" | "muted"
 
 export function delivery(status: string) {
   return DELIVERY[status] ?? { label: status.replaceAll("_", " ").toLowerCase(), tone: "muted" as const };
+}
+
+/** Meta's learning_stage_info.status, worded like the Delivery column in Ads Manager. */
+const LEARNING: Record<string, { label: string; tone: "success" | "warning" | "info" }> = {
+  LEARNING: { label: "Learning", tone: "info" },
+  SUCCESS: { label: "Active", tone: "success" },
+  FAIL: { label: "Learning limited", tone: "warning" },
+};
+
+export function learningStage(status: string) {
+  return LEARNING[status] ?? { label: status.toLowerCase(), tone: "muted" as const };
 }

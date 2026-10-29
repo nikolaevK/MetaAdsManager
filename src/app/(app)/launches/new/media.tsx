@@ -1,10 +1,11 @@
 "use client";
 
-import { Check, Crop, FolderOpen, ImageIcon, LoaderCircle, RectangleVertical, Square, TriangleAlert, Upload, X } from "lucide-react";
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { Check, Crop, FolderOpen, ImageIcon, LoaderCircle, RectangleHorizontal, RectangleVertical, TriangleAlert, Upload, X, type LucideIcon } from "lucide-react";
+import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { MediaThumb } from "@/app/(app)/library/media-thumb";
 import { SQUARE_ASPECTS, VERTICAL_ASPECTS } from "@/app/(app)/library/pairing";
 import { ACCEPT, accepted, uploadAsset, type UploadedAsset } from "@/app/(app)/library/upload";
+import { Modal } from "@/components/modal";
 import { Alert, Button, buttonClass, cn, Kbd } from "@/components/ui";
 import { MAX_FLEXIBLE_FILES } from "@/lib/launch/spec";
 
@@ -12,12 +13,12 @@ export type Asset = UploadedAsset;
 export type Slot = "feed" | "vertical";
 
 /** The two files an ad can carry, matched to placements the way Ads Manager's "customize per placement" does. */
-const SLOTS: Record<Slot, { title: string; ratios: string; detail: string; icon: typeof Square; fits: Set<string>; frame: string }> = {
+const SLOTS: Record<Slot, { title: string; ratios: string; detail: string; icon: LucideIcon; fits: Set<string>; frame: string }> = {
   feed: {
     title: "Feeds",
     ratios: "1:1 or 4:5",
     detail: "Facebook & Instagram feeds, Explore, Marketplace, search results",
-    icon: Square,
+    icon: RectangleHorizontal,
     fits: SQUARE_ASPECTS,
     frame: "aspect-square",
   },
@@ -75,7 +76,7 @@ export function MediaSlots({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {(["feed", "vertical"] as const).map((slot) => {
           const asset = slot === "feed" ? feed : vertical;
           const other = slot === "feed" ? vertical : feed;
@@ -216,7 +217,9 @@ export function FlexibleMedia({
         </div>
         {files.length === 0 ? (
           <p className="rounded-lg border border-dashed border-line px-3 py-6 text-center text-[12.5px] text-muted">
-            Drop up to {MAX_FLEXIBLE_FILES} images or videos here, upload them, or pick them from the library.
+            {/* Drag and drop needs a mouse; touch screens just tap. */}
+            <span className="pointer-coarse:hidden">Drop up to {MAX_FLEXIBLE_FILES} images or videos here, upload them, or pick them from the library.</span>
+            <span className="hidden pointer-coarse:inline">Upload up to {MAX_FLEXIBLE_FILES} images or videos, or pick them from the library.</span>
           </p>
         ) : (
           <ul className="grid grid-cols-[repeat(auto-fill,minmax(7rem,1fr))] gap-2.5">
@@ -384,7 +387,16 @@ function SlotCard({
               </p>
             </div>
           ) : (
-            <p className="text-[12.5px] text-muted">{uploading ? "Uploading…" : "Drop a file here, upload one, or pick from the library."}</p>
+            <p className="text-[12.5px] text-muted">
+              {uploading ? (
+                "Uploading…"
+              ) : (
+                <>
+                  <span className="pointer-coarse:hidden">Drop a file here, upload one, or pick from the library.</span>
+                  <span className="hidden pointer-coarse:inline">Upload a file, or pick one from the library.</span>
+                </>
+              )}
+            </p>
           )}
           {asset && mismatch && (
             <p className="flex items-start gap-1 text-[11.5px] text-warning-ink">
@@ -393,7 +405,7 @@ function SlotCard({
           )}
           {asset && kindClash && <p className="text-[11.5px] text-warning-ink">Use two images or two videos, not one of each.</p>}
           {error && <p className="text-[11.5px] text-danger-ink">{error}</p>}
-          <div className="mt-auto flex flex-wrap gap-1.5">
+          <div className="mt-auto flex flex-wrap items-center gap-1.5">
             <Button size="sm" disabled={uploading} onClick={() => input.current?.click()}>
               <Upload /> {asset ? "Replace" : "Upload"}
             </Button>
@@ -405,6 +417,7 @@ function SlotCard({
                 <Crop /> Crop
               </Button>
             )}
+            {asset && <span className="flex-1" aria-hidden />}
             {asset && (
               <button type="button" aria-label={`Remove ${meta.title} file`} title="Remove" onClick={onClear} className={buttonClass("ghost", "icon", "hover:bg-danger-soft hover:text-danger-ink")}>
                 <X />
@@ -428,26 +441,24 @@ function SlotCard({
 }
 
 function Dialog({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
   return (
-    <div className="fixed inset-0 z-50 flex animate-fade-in items-center justify-center bg-black/40 p-3 backdrop-blur-[2px] sm:p-6" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div role="dialog" aria-modal="true" aria-label={title} className={cn("flex max-h-full w-full flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-pop", wide ? "max-w-3xl" : "max-w-xl")}>
-        <div className="flex items-center justify-between gap-3 border-b border-line-soft px-5 py-3.5">
-          <h2 className="text-[14.5px] font-semibold tracking-tight">{title}</h2>
-          <span className="flex items-center gap-2">
-            <Kbd className="max-sm:hidden">Esc</Kbd>
-            <button type="button" aria-label="Close" onClick={onClose} className={buttonClass("ghost", "icon")}>
-              <X />
-            </button>
-          </span>
-        </div>
-        {children}
+    <Modal
+      onClose={onClose}
+      aria-label={title}
+      overlayClassName="z-50 flex items-center justify-center p-3 sm:p-6"
+      className={cn("flex max-h-full w-full animate-pop-in flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-pop", wide ? "max-w-3xl" : "max-w-xl")}
+    >
+      <div className="flex items-center justify-between gap-3 border-b border-line-soft px-5 py-3.5">
+        <h2 className="text-[14.5px] font-semibold tracking-tight">{title}</h2>
+        <span className="flex items-center gap-2">
+          <Kbd className="max-sm:hidden pointer-coarse:hidden">Esc</Kbd>
+          <button type="button" aria-label="Close" onClick={onClose} className={buttonClass("ghost", "icon", "pointer-coarse:size-10")}>
+            <X />
+          </button>
+        </span>
       </div>
-    </div>
+      {children}
+    </Modal>
   );
 }
 
@@ -478,7 +489,7 @@ function AssetPicker({
   const list = filtered ? assets.filter(fits) : assets;
   const full = !!limit && (selected?.length ?? 0) >= limit;
   return (
-    <Dialog title={slot ? `Choose a ${SLOTS[slot].title.toLowerCase()} file` : "Add files from the library"} onClose={onClose} wide>
+    <Dialog title={slot ? `Choose the ${SLOTS[slot].title} file` : "Add files from the library"} onClose={onClose} wide>
       <div className="flex items-center justify-between gap-3 border-b border-line-soft px-5 py-2.5 text-[12.5px]">
         {slot ? (
           <label className="flex cursor-pointer items-center gap-2 text-muted">
@@ -517,7 +528,7 @@ function AssetPicker({
                         {a.kind === "image" ? "IMG" : "VID"} · {aspectText(a)}
                       </span>
                       {on && (
-                        <span className="absolute right-1.5 top-1.5 grid size-5 place-items-center rounded-full bg-primary text-white">
+                        <span className="absolute right-1.5 top-1.5 grid size-5 place-items-center rounded-full bg-primary text-on-primary">
                           <Check className="size-3.5" aria-hidden />
                         </span>
                       )}

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition } from "react";
 import { baseName } from "@/app/(app)/library/pairing";
 import { lookupPages, type PageOption } from "@/app/(app)/lookups";
+import { useConfirm } from "@/components/confirm-dialog";
 import { Alert, Button, Card, cn } from "@/components/ui";
 import { formatMoney, formatRelative } from "@/lib/format";
 import {
@@ -21,10 +22,12 @@ import {
   resolveAdset,
   STEPS,
   toLaunchInput,
+  withParent,
   type AdDraft,
   type AdsetDraft,
   type BuilderState,
   type CampaignDraft,
+  type ParentView,
 } from "@/lib/launch/draft";
 import type { MessagingApp } from "@/lib/launch/objectives";
 import type { MediaPick } from "@/lib/launch/spec";
@@ -51,6 +54,8 @@ type Props = {
   formats: readonly FormatOption[];
   initialState: BuilderState;
   draftId: string | null;
+  /** The existing campaign / ad set this launch adds to, read live from Meta (null for a new campaign). */
+  parent: ParentView | null;
 };
 
 type SaveState = { status: "idle" | "pending" | "saving" | "saved" | "error"; at?: number; error?: string };
@@ -105,8 +110,8 @@ function Builder(props: Props) {
   /** Set when the builder itself changes state (not the user), so that change alone doesn't create a draft. */
   const quiet = useRef(false);
   const fetchPages = useCallback(
-    () =>
-      lookupPages(account.id).then((res) => {
+    (fresh?: boolean) =>
+      lookupPages(account.id, fresh).then((res) => {
         if (res.ok) {
           setPages(res.items);
           setPagesError(null);
@@ -129,7 +134,7 @@ function Builder(props: Props) {
   }, [fetchPages]);
   const reloadPages = () => {
     setPages(null);
-    void fetchPages();
+    void fetchPages(true);
   };
 
   // ── Names, input and issues ───────────────────────────────────────────────
@@ -267,7 +272,20 @@ function Builder(props: Props) {
     const a = state.ads[adIndex];
     setState((s) => ({
       ...s,
-      ads: s.ads.map((x) => ({ ...x, primaryTexts: [...a.primaryTexts], headlines: [...a.headlines], description: a.description, url: a.url, displayLink: a.displayLink, urlTags: a.urlTags, cta: a.cta, features: [...a.features] })),
+      ads: s.ads.map((x) => ({
+        ...x,
+        primaryTexts: [...a.primaryTexts],
+        headlines: [...a.headlines],
+        description: a.description,
+        url: a.url,
+        displayLink: a.displayLink,
+        urlTags: a.urlTags,
+        cta: a.cta,
+        leadFormId: a.leadFormId,
+        features: [...a.features],
+        multiAdvertiser: a.multiAdvertiser,
+        shopDestination: a.shopDestination,
+      })),
     }));
   };
 
@@ -277,6 +295,7 @@ function Builder(props: Props) {
     return {
       website: resolved.some(({ r }) => r.destination === "website" || r.destination === "on_ad"),
       app: resolved.some(({ r }) => r.destination === "app"),
+      instantForm: resolved.some(({ r }) => r.destination === "instant_form"),
       messaging: [...apps],
     };
   })();
@@ -295,8 +314,9 @@ function Builder(props: Props) {
       if (res && !res.ok) setError(res.error ?? "Could not create the launch.");
     });
   };
-  const deleteDraft = () => {
-    if (!confirm("Delete this draft? This can't be undone.")) return;
+  const confirm = useConfirm();
+  const deleteDraft = async () => {
+    if (!(await confirm({ title: "Delete this draft?", body: "This can't be undone.", confirmLabel: "Delete draft", tone: "danger" }))) return;
     startTransition(async () => {
       // Stop autosave first and let an in-flight save land, so nothing re-creates the draft after it's deleted.
       deleted.current = true;
@@ -308,6 +328,7 @@ function Builder(props: Props) {
   };
 
   const c = state.campaign;
+  const mode = state.target.mode;
   const cbo = c.budgetLevel === "campaign";
   const totalBudget = cbo ? (positiveNumber(c.budget) ?? 0) : state.adsets.reduce((t, s) => t + (positiveNumber(s.budget) ?? 0), 0);
   const totalAds = state.adsets.length * state.ads.length;
@@ -315,7 +336,7 @@ function Builder(props: Props) {
   const last = step === STEPS.length - 1;
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
+    <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
       <div className="flex min-w-0 flex-col gap-4">
         <StepRail step={step} issues={issueCount} onGo={goTo} />
 
@@ -334,8 +355,11 @@ function Builder(props: Props) {
             setCampaign={setCampaign}
             onTemplate={(id) => {
               const t = templates.find((x) => x.id === id);
-              setState((s) => (t ? applyTemplate(s, t) : { ...s, templateId: "" }));
+              // A template never changes an existing campaign's settings; it only prefills the new ad sets and ads.
+              setState((s) => (t ? (props.parent ? withParent(applyTemplate(s, t), props.parent) : applyTemplate(s, t)) : { ...s, templateId: "" }));
             }}
+            parent={props.parent}
+            accountId={account.id}
           />
         )}
         {step === 1 && (
@@ -351,12 +375,14 @@ function Builder(props: Props) {
             onDuplicate={duplicateAdset}
             onRemove={removeAdset}
             patch={patchAdset}
+            parent={props.parent}
           />
         )}
         {step === 2 && (
           <AdStep
             state={state}
             names={names.ads}
+            accountId={account.id}
             clientId={client.id}
             assets={assets}
             creatives={props.creatives}
@@ -378,6 +404,7 @@ function Builder(props: Props) {
         {step === 3 && (
           <ReviewStep
             state={state}
+            parent={props.parent}
             names={names}
             issues={issues}
             currency={account.currency}
@@ -422,21 +449,25 @@ function Builder(props: Props) {
       <aside className="min-w-0 max-xl:hidden xl:sticky xl:top-6 xl:self-start">
         <Card className="overflow-hidden">
           <div className="px-5 pb-4 pt-5">
-            <p className="text-[11px] font-medium uppercase tracking-wider text-faint">Summary</p>
-            <p className="mt-1.5 break-words text-[14.5px] font-semibold leading-snug tracking-tight">{names.campaign || "Untitled campaign"}</p>
+            <p className="text-[11px] font-medium uppercase tracking-wider text-faint">{mode === "new" ? "Summary" : mode === "campaign" ? "Adding ad sets to" : "Adding ads to"}</p>
+            <p className="mt-1.5 break-words text-[14.5px] font-semibold leading-snug tracking-tight">{(mode === "adset" ? names.adsets[0] : names.campaign) || "Untitled campaign"}</p>
             <p className="mt-0.5 text-xs text-muted">
               {OBJECTIVE_LABELS[c.objective]} · {cbo ? "Campaign budget (CBO)" : "Ad set budgets (ABO)"}
             </p>
           </div>
           <dl className="flex flex-col gap-2 border-t border-dashed border-line px-5 py-4 text-[13px]">
-            <LineItem label="Campaign" value={1} />
-            <LineItem label={`Ad set${state.adsets.length === 1 ? "" : "s"}`} value={state.adsets.length} />
+            <LineItem label={mode === "new" ? "Campaign" : "New campaign"} value={mode === "new" ? 1 : 0} />
+            <LineItem label={`${mode === "adset" ? "New ad set" : "Ad set"}${state.adsets.length === 1 ? "" : "s"}`} value={mode === "adset" ? 0 : state.adsets.length} />
             <LineItem label={`Ad${totalAds === 1 ? "" : "s"}`} detail={state.adsets.length > 1 && state.ads.length > 0 ? `${state.ads.length} × ${state.adsets.length}` : undefined} value={totalAds} />
           </dl>
-          <div className="flex items-baseline justify-between gap-3 border-t border-line bg-surface-2 px-5 py-4">
-            <p className="text-[13px] font-medium">{c.budgetSchedule === "lifetime" ? "Lifetime" : "Daily"} budget</p>
-            <p className="tabular shrink-0 text-xl font-semibold tracking-tight">{formatMoney(totalBudget, account.currency)}</p>
-          </div>
+          {!(mode !== "new" && cbo) && mode !== "adset" && (
+            <div className="flex items-baseline justify-between gap-3 border-t border-line bg-surface-2 px-5 py-4">
+              <p className="text-[13px] font-medium">
+                {c.budgetSchedule === "lifetime" ? "Lifetime" : "Daily"} budget{mode === "campaign" ? " (new ad sets)" : ""}
+              </p>
+              <p className="tabular shrink-0 text-xl font-semibold tracking-tight">{formatMoney(totalBudget, account.currency)}</p>
+            </div>
+          )}
           <div className="flex flex-col gap-3 border-t border-line-soft p-5">
             <SaveIndicator save={save} />
             <p className="flex gap-2 text-xs text-muted">
@@ -480,6 +511,10 @@ function Builder(props: Props) {
 function StepRail({ step, issues, onGo }: { step: number; issues: number[]; onGo: (n: number) => void }) {
   return (
     <nav id="builder-steps" aria-label="Builder steps" className="scroll-mt-6 overflow-x-auto rounded-xl border border-line bg-surface p-1.5 shadow-card">
+      {/* Phones only show the current step's label in the rail; say where you are in words too. */}
+      <p className="px-1.5 pb-1.5 text-xs text-muted sm:hidden" aria-hidden>
+        Step {step + 1} of {STEPS.length} · <span className="font-medium text-ink">{STEPS[step].label}</span>
+      </p>
       <ol className="flex min-w-max items-center gap-1">
         {STEPS.map((s, i) => {
           const done = i < STEPS.length - 1 && issues[i] === 0;
@@ -498,15 +533,16 @@ function StepRail({ step, issues, onGo }: { step: number; issues: number[]; onGo
                 <span
                   className={cn(
                     "tabular grid size-5 shrink-0 place-items-center rounded-full text-[11px] font-semibold ring-1 ring-inset",
-                    i === step ? "bg-primary text-white ring-primary" : done ? "bg-success-soft text-success-ink ring-success/30" : "bg-surface-2 text-muted ring-line",
+                    i === step ? "bg-primary text-on-primary ring-primary" : done ? "bg-success-soft text-success-ink ring-success/30" : "bg-surface-2 text-muted ring-line",
                   )}
                 >
                   {done && i !== step ? <Check className="size-3" strokeWidth={3} aria-hidden /> : i + 1}
                 </span>
-                <span className={cn(i !== step && "max-sm:hidden")}>{s.label}</span>
+                <span className={cn(i !== step && "max-sm:sr-only")}>{s.label}</span>
                 {issues[i] > 0 && i < STEPS.length - 1 && (
                   <span className="tabular rounded-full bg-warning-soft px-1.5 text-[11px] font-semibold leading-5 text-warning-ink" title={`${issues[i]} to fix`}>
                     {issues[i]}
+                    <span className="sr-only"> to fix</span>
                   </span>
                 )}
               </button>

@@ -33,7 +33,8 @@ export async function undoChangeAction(auditId: string): Promise<ActionState> {
       try {
         const account = await resolveAccount(change.level, [change.id]);
         if (details.accountId && account.id !== details.accountId) throw new UserError("Object moved to another account.");
-        if (change.before.status === "ACTIVE") await assertNotAwaitingApproval(change.level, [change.id]);
+        const switchOffOnly = Object.keys(change.before).every((k) => k === "status") && change.before.status !== "ACTIVE";
+        if (!switchOffOnly) await assertNotAwaitingApproval(change.level, [change.id]);
         reverted.push(await updateObject(change.level, change.id, change.before, account.id));
       } catch (err) {
         errors.push(failure(err)?.error ?? "Failed");

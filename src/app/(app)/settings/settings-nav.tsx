@@ -4,7 +4,7 @@ import { Activity, Building2, LayoutTemplate, Tags, Users, type LucideIcon } fro
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Suspense, useEffect, useRef } from "react";
-import { cn, segmentClass } from "@/components/ui";
+import { cn, focusRing, segmentClass } from "@/components/ui";
 
 const SECTIONS: { href: string; label: string; description: string; icon: LucideIcon }[] = [
   { href: "/settings/clients", label: "Clients & accounts", description: "Accounts and identities", icon: Building2 },
@@ -70,13 +70,14 @@ function Nav({ pathname }: { pathname: string }) {
                   aria-current={active ? "page" : undefined}
                   className={cn(
                     "group flex items-center gap-3 rounded-lg px-2.5 py-2 transition-colors",
+                    focusRing,
                     active ? "bg-surface shadow-card ring-1 ring-line" : "hover:bg-hover",
                   )}
                 >
                   <span
                     className={cn(
                       "grid size-8 shrink-0 place-items-center rounded-lg border transition-colors",
-                      active ? "border-primary/20 bg-primary-soft text-primary" : "border-line bg-surface text-faint group-hover:text-muted",
+                      active ? "border-primary/20 bg-primary-soft text-primary-ink" : "border-line bg-surface text-faint group-hover:text-muted",
                     )}
                   >
                     <Icon className="size-4" aria-hidden />

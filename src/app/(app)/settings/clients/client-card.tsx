@@ -2,8 +2,9 @@
 
 import { Link2, Pencil, Trash2, Unplug } from "lucide-react";
 import { useState, type ComponentProps } from "react";
-import { useSettingsAction } from "@/components/settings-ui";
-import { Badge, Button, Card, Input, Select, StatusDot, type Tone } from "@/components/ui";
+import { useConfirm } from "@/components/confirm-dialog";
+import { FormFooter, useSettingsAction } from "@/components/settings-ui";
+import { Badge, Button, Card, cn, focusRing, Input, Select, StatusDot, type Tone } from "@/components/ui";
 import { InlineEmpty } from "../section-header";
 import { deleteClient, disconnectAccount, moveAccount, renameClient, setClientConventions } from "./actions";
 import { AccountIdentity } from "./account-identity";
@@ -42,8 +43,19 @@ export function ClientCard({
 }) {
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(client.name);
-  const { pending, run } = useSettingsAction();
+  const { pending, run, error } = useSettingsAction({ inlineErrors: true });
+  const confirm = useConfirm();
   const active = accounts.filter((a) => a.statusTone === "success").length;
+
+  const removeClient = async () => {
+    const ok = await confirm({
+      title: `Delete ${client.name}?`,
+      body: `This disconnects its ${accounts.length === 1 ? "ad account" : `${accounts.length} ad accounts`} and deletes their synced data, launches, templates and creative library files. Nothing is deleted in Meta.`,
+      confirmLabel: "Delete client",
+      tone: "danger",
+    });
+    if (ok) run(() => deleteClient({ id: client.id }));
+  };
 
   const setConventions = (patch: { namingConventionId?: string | null; utmRuleId?: string | null }) =>
     run(() =>
@@ -74,6 +86,11 @@ export function ClientCard({
               <Button type="button" size="sm" variant="ghost" onClick={() => setRenaming(false)}>
                 Cancel
               </Button>
+              {error && (
+                <p role="alert" className="w-full text-xs text-danger-ink">
+                  {error}
+                </p>
+              )}
             </form>
           ) : (
             <div className="min-w-0">
@@ -85,7 +102,7 @@ export function ClientCard({
                     aria-label={`Rename ${client.name}`}
                     title="Rename"
                     onClick={() => setRenaming(true)}
-                    className="grid size-6 shrink-0 place-items-center rounded-md text-faint transition-colors hover:bg-hover hover:text-ink"
+                    className={cn("grid size-6 shrink-0 place-items-center rounded-md text-faint transition-colors hover:bg-hover hover:text-ink pointer-coarse:size-10", focusRing)}
                   >
                     <Pencil className="size-3.5" />
                   </button>
@@ -99,7 +116,7 @@ export function ClientCard({
           )}
         </div>
 
-        <div className="grid w-full grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-2 @2xl:flex @2xl:w-auto @2xl:items-center">
+        <div className="grid w-full grid-cols-2 items-end gap-2 @2xl:flex @2xl:w-auto @2xl:items-center">
           <LabeledSelect
             label="Naming"
             aria-label="Naming convention"
@@ -128,26 +145,6 @@ export function ClientCard({
               </option>
             ))}
           </LabeledSelect>
-          {canEdit && (
-            <Button
-              size="icon"
-              variant="ghost"
-              disabled={pending}
-              aria-label={`Delete client ${client.name}`}
-              title="Delete client"
-              className="hover:bg-danger-soft hover:text-danger-ink"
-              onClick={() => {
-                if (
-                  confirm(
-                    `Delete client "${client.name}"?\n\nThis disconnects its ${accounts.length} ad account(s) and deletes their synced data, launches, templates and creative library files. Nothing is deleted in Meta.`,
-                  )
-                )
-                  run(() => deleteClient({ id: client.id }));
-              }}
-            >
-              <Trash2 />
-            </Button>
-          )}
         </div>
       </div>
 
@@ -181,9 +178,11 @@ export function ClientCard({
                         aria-label={`Move ${a.name} to another client`}
                         value=""
                         disabled={pending}
-                        onChange={(e) => {
+                        onChange={async (e) => {
                           const to = clients.find((c) => c.id === e.target.value);
-                          if (to && confirm(`Move ${a.name} to ${to.name}?`)) run(() => moveAccount({ accountId: a.id, clientId: to.id }));
+                          if (!to) return;
+                          const ok = await confirm({ title: `Move ${a.name} to ${to.name}?`, confirmLabel: "Move account" });
+                          if (ok) run(() => moveAccount({ accountId: a.id, clientId: to.id }));
                         }}
                         className="h-8 w-36 text-[13px]"
                       >
@@ -202,13 +201,14 @@ export function ClientCard({
                       variant="danger"
                       disabled={pending}
                       title="Disconnect"
-                      onClick={() => {
-                        if (
-                          confirm(
-                            `Disconnect ${a.name}?\n\nThe mirrored campaigns, ad sets, ads, insights history, review events and launches for this account are deleted from this app. Nothing changes in Meta, and you can reconnect later (insights will be re-synced).`,
-                          )
-                        )
-                          run(() => disconnectAccount({ accountId: a.id }));
+                      onClick={async () => {
+                        const ok = await confirm({
+                          title: `Disconnect ${a.name}?`,
+                          body: "The mirrored campaigns, ad sets, ads, insights history, review events and launches for this account are deleted from this app. Nothing changes in Meta, and you can reconnect later (insights will be re-synced).",
+                          confirmLabel: "Disconnect",
+                          tone: "danger",
+                        });
+                        if (ok) run(() => disconnectAccount({ accountId: a.id }));
                       }}
                     >
                       <Unplug /> Disconnect
@@ -217,7 +217,7 @@ export function ClientCard({
                 )}
               </div>
 
-              <div className="grid gap-2.5 @2xl:grid-cols-2 @2xl:pl-11">
+              <div className="grid grid-cols-1 gap-2.5 @2xl:grid-cols-2 @2xl:pl-11">
                 <DetailPanel title="Sync health">
                   <ul className="flex flex-col gap-1.5 text-[13px]">
                     {a.syncs.map((s) => (
@@ -249,9 +249,12 @@ export function ClientCard({
       )}
 
       {canEdit && (
-        <div className="border-t border-line-soft bg-surface-2 px-5 py-3">
+        <FormFooter error={renaming ? null : error}>
+          <Button variant="ghost" disabled={pending} className="mr-auto hover:bg-danger-soft hover:text-danger-ink" onClick={removeClient}>
+            <Trash2 /> Delete<span className="max-sm:sr-only"> client</span>
+          </Button>
           <ConnectAccount clientId={client.id} clientName={client.name} />
-        </div>
+        </FormFooter>
       )}
     </Card>
   );

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Suspense, type ReactNode } from "react";
 import { logout } from "@/app/login/actions";
-import { Avatar, cn, Skeleton } from "@/components/ui";
+import { Avatar, cn, focusRing, Skeleton } from "@/components/ui";
 import { AccountSwitcher, type AccountOption } from "./account-switcher";
 import { NAV_GROUPS } from "./nav-items";
 import { ThemeSwitch } from "./theme-toggle";
@@ -22,7 +22,7 @@ export function BrandMark({ className }: { className?: string }) {
     <span
       aria-hidden
       className={cn(
-        "relative grid size-8 shrink-0 place-items-center overflow-hidden rounded-[10px] bg-gradient-to-br from-brand-from to-brand-to text-white shadow-glow",
+        "relative grid size-8 shrink-0 place-items-center overflow-hidden rounded-[10px] bg-gradient-to-br from-brand-from to-brand-to text-on-primary shadow-glow",
         className,
       )}
     >
@@ -93,7 +93,8 @@ function NavGroups({ pathname, reviewCount, compact }: { pathname: string; revie
                     title={label}
                     aria-current={active ? "page" : undefined}
                     className={cn(
-                      "group relative flex h-9 items-center gap-2.5 rounded-lg px-2.5 text-[13.5px] font-medium transition-colors",
+                      "group relative flex h-9 items-center gap-2.5 rounded-lg px-2.5 text-[13.5px] font-medium transition-colors pointer-coarse:h-10",
+                      focusRing,
                       compact && "md:max-lg:justify-center md:max-lg:px-0",
                       active
                         ? "bg-surface text-ink shadow-card ring-1 ring-line"
@@ -105,7 +106,7 @@ function NavGroups({ pathname, reviewCount, compact }: { pathname: string; revie
                     {count > 0 && (
                       <span
                         className={cn(
-                          "min-w-5 rounded-full bg-danger px-1.5 text-center text-[11px] font-semibold leading-5 text-white",
+                          "min-w-5 rounded-full bg-danger px-1.5 text-center text-[11px] font-semibold leading-5 text-on-primary",
                           compact && "md:max-lg:absolute md:max-lg:-right-0.5 md:max-lg:-top-0.5 md:max-lg:min-w-4 md:max-lg:px-1 md:max-lg:text-[10px] md:max-lg:leading-4",
                         )}
                       >
@@ -137,7 +138,12 @@ function UserCard({ user, compact }: { user: SidebarData["user"]; compact: boole
           <p className="truncate text-[11.5px] capitalize text-faint">{user.role}</p>
         </div>
         <form action={logout} className={cn(compact && "md:max-lg:hidden")}>
-          <button type="submit" title="Log out" aria-label="Log out" className="grid size-8 place-items-center rounded-lg text-faint transition-colors hover:bg-hover hover:text-ink">
+          <button
+            type="submit"
+            title="Log out"
+            aria-label="Log out"
+            className={cn("grid size-8 place-items-center rounded-lg text-faint transition-colors hover:bg-hover hover:text-ink pointer-coarse:size-10", focusRing)}
+          >
             <LogOut className="size-4" />
           </button>
         </form>

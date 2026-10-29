@@ -15,11 +15,13 @@ export function ConversionEventSelect({
   pixelId,
   value,
   onChange,
+  id,
 }: {
   accountId: string;
   pixelId: string;
   value: string;
   onChange: (event: string) => void;
+  id?: string;
 }) {
   const [activity, setActivity] = useState<{ pixelId: string; counts: Record<string, number> } | null>(null);
   useEffect(() => {
@@ -47,7 +49,7 @@ export function ConversionEventSelect({
   const active = counts ? CONVERSION_EVENTS.filter((ev) => counts[ev]).sort((a, b) => counts[b] - counts[a]) : [];
 
   return (
-    <Select value={value} onChange={(e) => onChange(e.target.value)}>
+    <Select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
       {counts ? (
         <>
           {active.length > 0 && <optgroup label="Active on this pixel (last 7 days)">{active.map(option)}</optgroup>}

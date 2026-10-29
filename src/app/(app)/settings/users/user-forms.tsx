@@ -2,7 +2,8 @@
 
 import { KeyRound, UserPlus } from "lucide-react";
 import { useState } from "react";
-import { useSettingsAction } from "@/components/settings-ui";
+import { useConfirm } from "@/components/confirm-dialog";
+import { FormFooter, useSettingsAction } from "@/components/settings-ui";
 import { Button, Card, CardHeader, Field, Input, Select } from "@/components/ui";
 import { SectionHeader } from "../section-header";
 import { changeMyPassword, createUser, resetUserPassword, setUserDisabled, setUserRole } from "./actions";
@@ -20,7 +21,7 @@ export function CreateUserForm({ minLength, title, description }: { minLength: n
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState(empty);
   const [errors, setErrors] = useState<Errors>({});
-  const { pending, run } = useSettingsAction();
+  const { pending, run, error } = useSettingsAction({ inlineErrors: true });
 
   return (
     <>
@@ -29,7 +30,7 @@ export function CreateUserForm({ minLength, title, description }: { minLength: n
         description={description}
         actions={
           !open && (
-            <Button variant="create" onClick={() => setOpen(true)}>
+            <Button variant="primary" onClick={() => setOpen(true)}>
               <UserPlus /> Add user
             </Button>
           )
@@ -51,7 +52,7 @@ export function CreateUserForm({ minLength, title, description }: { minLength: n
             }}
           >
             <CardHeader icon={UserPlus} title="Add a user" description="They can sign in right away with the temporary password you set here." />
-            <div className="grid gap-4 p-5 @xl:grid-cols-2">
+            <div className="grid grid-cols-1 gap-4 p-5 @xl:grid-cols-2">
               <Field label="Name" htmlFor="nu-name" error={errors.name}>
                 <Input id="nu-name" value={value.name} onChange={(e) => setValue((v) => ({ ...v, name: e.target.value }))} required maxLength={120} />
               </Field>
@@ -79,14 +80,14 @@ export function CreateUserForm({ minLength, title, description }: { minLength: n
                 />
               </Field>
             </div>
-            <div className="flex items-center justify-end gap-2 border-t border-line-soft bg-surface-2 px-5 py-3">
-              <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
+            <FormFooter error={error}>
+              <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" variant="primary" size="sm" disabled={pending}>
+              <Button type="submit" variant="primary" disabled={pending}>
                 Create user
               </Button>
-            </div>
+            </FormFooter>
           </form>
         </Card>
       )}
@@ -106,13 +107,14 @@ export function UserRowActions({
   const [resetting, setResetting] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const { pending, run } = useSettingsAction();
+  const confirm = useConfirm();
 
   if (isSelf) return <span className="block text-right text-xs text-faint">Your account</span>;
 
   if (resetting) {
     return (
       <form
-        className="flex items-center justify-end gap-2"
+        className="flex w-full items-center justify-end gap-2"
         onSubmit={(e) => {
           e.preventDefault();
           run(() => resetUserPassword({ id: user.id, password: newPassword }), {
@@ -132,7 +134,7 @@ export function UserRowActions({
           minLength={minLength}
           value={newPassword}
           onChange={(e) => setNewPassword(e.target.value)}
-          className="h-8 w-56 shrink-0 text-[13px]"
+          className="h-8 min-w-0 flex-1 text-[13px] @3xl:w-56 @3xl:flex-none"
         />
         <Button type="submit" size="sm" variant="primary" disabled={pending || newPassword.length < minLength}>
           Set
@@ -174,9 +176,11 @@ export function UserRowActions({
         variant={user.disabled ? "secondary" : "ghost"}
         disabled={pending}
         className={user.disabled ? undefined : "hover:bg-danger-soft hover:text-danger-ink"}
-        onClick={() => {
-          if (user.disabled || confirm(`Disable ${user.name}? They are signed out immediately and can't log in.`))
-            run(() => setUserDisabled({ id: user.id, disabled: !user.disabled }));
+        onClick={async () => {
+          const ok =
+            user.disabled ||
+            (await confirm({ title: `Disable ${user.name}?`, body: "They're signed out right away and can't log in until enabled again.", confirmLabel: "Disable user", tone: "danger" }));
+          if (ok) run(() => setUserDisabled({ id: user.id, disabled: !user.disabled }));
         }}
       >
         {user.disabled ? "Enable" : "Disable"}
@@ -189,7 +193,7 @@ export function ChangePasswordForm({ minLength }: { minLength: number }) {
   const empty = { current: "", next: "", confirm: "" };
   const [value, setValue] = useState(empty);
   const [errors, setErrors] = useState<Errors>({});
-  const { pending, run } = useSettingsAction();
+  const { pending, run, error } = useSettingsAction({ inlineErrors: true });
   const mismatch = value.confirm.length > 0 && value.confirm !== value.next;
 
   return (
@@ -204,7 +208,7 @@ export function ChangePasswordForm({ minLength }: { minLength: number }) {
         });
       }}
     >
-      <div className="grid gap-4 p-5 @2xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 p-5 @2xl:grid-cols-3">
         <Field label="Current password" htmlFor="cp-current" error={errors.current}>
           <Input id="cp-current" type="password" autoComplete="current-password" value={value.current} onChange={(e) => setValue((v) => ({ ...v, current: e.target.value }))} required />
         </Field>
@@ -215,11 +219,11 @@ export function ChangePasswordForm({ minLength }: { minLength: number }) {
           <Input id="cp-confirm" type="password" autoComplete="new-password" value={value.confirm} onChange={(e) => setValue((v) => ({ ...v, confirm: e.target.value }))} required />
         </Field>
       </div>
-      <div className="flex items-center justify-end gap-2 border-t border-line-soft bg-surface-2 px-5 py-3">
-        <Button type="submit" variant="primary" size="sm" disabled={pending || mismatch}>
+      <FormFooter error={error}>
+        <Button type="submit" variant="primary" disabled={pending || mismatch}>
           Change password
         </Button>
-      </div>
+      </FormFooter>
     </form>
   );
 }

@@ -2,11 +2,12 @@
 
 import { CornerDownRight, Layers, Megaphone, Plus, RectangleHorizontal, Trash2, Type } from "lucide-react";
 import { useRef, useState } from "react";
-import { useSettingsAction } from "@/components/settings-ui";
+import { useConfirm } from "@/components/confirm-dialog";
+import { FormFooter, useSettingsAction } from "@/components/settings-ui";
 import { Button, Card, CardHeader, Field, Input } from "@/components/ui";
 import { ageToken, DEFAULT_NAMING, formatDateToken, NAMING_TOKENS, renderName } from "@/lib/launch/naming";
 import { deleteNamingConvention, saveNamingConvention } from "./actions";
-import { FormFooter, InsertChip, PreviewPanel, UsedBy } from "./parts";
+import { InsertChip, PreviewPanel, UsedBy } from "./parts";
 
 type Convention = { id?: string; name: string; campaignPattern: string; adsetPattern: string; adPattern: string };
 type Level = keyof typeof NAMING_TOKENS;
@@ -44,7 +45,8 @@ export function NamingForm({ convention, canEdit, usedBy }: { convention?: Conve
   const [value, setValue] = useState<Convention>(convention ?? empty);
   const [errors, setErrors] = useState<Record<string, string[] | undefined>>({});
   const refs = useRef<Partial<Record<Level, HTMLInputElement | null>>>({});
-  const { pending, run } = useSettingsAction();
+  const { pending, run, error } = useSettingsAction({ inlineErrors: true });
+  const confirm = useConfirm();
   const samples = sampleValues();
   const levels = Object.keys(FIELD) as Level[];
   const idBase = convention?.id ?? "new";
@@ -64,7 +66,7 @@ export function NamingForm({ convention, canEdit, usedBy }: { convention?: Conve
   };
 
   return (
-    <Card className="overflow-hidden">
+    <Card className="overflow-clip">
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -120,7 +122,7 @@ export function NamingForm({ convention, canEdit, usedBy }: { convention?: Conve
                     />
                   </Field>
                   {canEdit && (
-                    <div className="flex flex-wrap items-center gap-1" aria-label={`Insert a token into the ${LABEL[level].toLowerCase()} pattern`}>
+                    <div role="group" className="flex flex-wrap items-center gap-1 pointer-coarse:gap-1.5" aria-label={`Insert a token into the ${LABEL[level].toLowerCase()} pattern`}>
                       {NAMING_TOKENS[level].map((t) => (
                         <InsertChip key={t} onClick={() => insertToken(level, t)}>
                           {`{${t}}`}
@@ -151,23 +153,27 @@ export function NamingForm({ convention, canEdit, usedBy }: { convention?: Conve
           </div>
         </fieldset>
         {canEdit && (
-          <FormFooter>
+          <FormFooter sticky error={error}>
             {convention?.id && (
               <Button
                 type="button"
                 variant="ghost"
-                size="sm"
                 disabled={pending}
                 className="mr-auto hover:bg-danger-soft hover:text-danger-ink"
-                onClick={() => {
-                  if (confirm(`Delete naming convention "${convention.name}"? Clients using it switch to the default.`))
-                    run(() => deleteNamingConvention({ id: convention.id! }));
+                onClick={async () => {
+                  const ok = await confirm({
+                    title: `Delete “${convention.name}”?`,
+                    body: "Clients using this naming convention switch to the built-in default.",
+                    confirmLabel: "Delete convention",
+                    tone: "danger",
+                  });
+                  if (ok) run(() => deleteNamingConvention({ id: convention.id! }));
                 }}
               >
                 <Trash2 /> Delete
               </Button>
             )}
-            <Button type="submit" variant="primary" size="sm" disabled={pending}>
+            <Button type="submit" variant="primary" disabled={pending}>
               {convention ? "Save changes" : "Add convention"}
             </Button>
           </FormFooter>

@@ -49,7 +49,7 @@ async function Templates() {
   const canEdit = hasRole(user, "admin");
   const rows = await getTemplatesList();
   const newButton = canEdit && (
-    <Link href="/settings/templates/new" className={buttonClass("create")}>
+    <Link href="/settings/templates/new" className={buttonClass("primary")}>
       <Plus /> New template
     </Link>
   );
@@ -82,7 +82,7 @@ async function Templates() {
                   <li key={t.id}>
                     <Link
                       href={`/settings/templates/${t.id}`}
-                      className="group flex items-start gap-3 px-5 py-4 transition-colors hover:bg-hover/60 focus-visible:bg-hover/60 focus-visible:outline-none"
+                      className="group flex items-start gap-3 px-5 py-4 transition-colors hover:bg-hover/60 focus-visible:bg-hover/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/50"
                     >
                       <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg border border-line bg-surface-2 text-muted transition-colors group-hover:text-primary">
                         <LayoutTemplate className="size-4" aria-hidden />
