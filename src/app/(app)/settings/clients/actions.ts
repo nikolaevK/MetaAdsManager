@@ -23,7 +23,7 @@ import {
 import { kickWorker } from "@/lib/jobs/kick";
 import { enqueue, PRIORITY } from "@/lib/jobs/queue";
 import { ACCOUNT_STATUS, getRemoteAdAccount, listRemoteAdAccounts } from "@/lib/meta/accounts";
-import { deleteObject } from "@/lib/storage";
+import { deleteObjects } from "@/lib/storage";
 
 // Internal ids are UUIDs by default, but seeded rows may use other stable strings.
 const internalId = z.string().min(1).max(64);
@@ -118,7 +118,7 @@ export async function deleteClient(input: { id: string }): Promise<ActionState> 
     // Creatives reference assets with ON DELETE RESTRICT, so remove them before the cascade.
     await db().delete(creatives).where(eq(creatives.clientId, id));
     await db().delete(clients).where(eq(clients.id, id));
-    await Promise.all(assets.map((a) => deleteObject(a.key).catch(() => undefined)));
+    await deleteObjects(assets.map((a) => a.key)).catch(() => undefined);
     await audit(user.id, "client.delete", { type: "client", id }, { accounts: accounts.map((a) => a.id) });
     refresh();
     return { ok: true, message: "Client deleted" };

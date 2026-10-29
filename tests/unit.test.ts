@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { addDays, resolveDateRange, todayIn } from "@/lib/dates";
+import { contentFingerprint } from "@/lib/fingerprint";
+import { sniffMediaType } from "@/lib/storage";
 import { isTransient, MetaApiError } from "@/lib/meta/errors";
 import { parseUsageHeaders } from "@/lib/meta/usage-headers";
 import { renderName } from "@/lib/launch/naming";
@@ -668,5 +671,28 @@ describe("conversion events", () => {
       ],
     };
     expect(sumPixelStats(stats)).toEqual({ PageView: 40, Schedule: 5, Lead: 1 });
+  });
+});
+
+describe("library uploads", () => {
+  const sha = (b: Uint8Array) => createHash("sha256").update(b).digest();
+
+  it("fingerprints a file slice by slice, so a large video is never held in memory whole", async () => {
+    const bytes = Uint8Array.from({ length: 10 }, (_, i) => i);
+    const expected = sha(Buffer.concat([sha(bytes.subarray(0, 4)), sha(bytes.subarray(4, 8)), sha(bytes.subarray(8))])).toString("hex");
+    expect(await contentFingerprint(new Blob([bytes]), 4)).toBe(expected);
+    // One slice: the hash of the file's hash.
+    expect(await contentFingerprint(new Blob([bytes]))).toBe(sha(sha(bytes)).toString("hex"));
+    expect(await contentFingerprint(new Blob([bytes]))).not.toBe(await contentFingerprint(new Blob([bytes.subarray(1)])));
+  });
+
+  it("decides the file type from magic bytes, not the name or Content-Type", () => {
+    const ftyp = (brand: string) => Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from(`ftyp${brand}`, "latin1"), Buffer.alloc(4)]);
+    expect(sniffMediaType(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))?.mime).toBe("image/jpeg");
+    expect(sniffMediaType(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0, 0, 0, 0, 0]))?.mime).toBe("image/png");
+    expect(sniffMediaType(ftyp("isom"))?.mime).toBe("video/mp4");
+    expect(sniffMediaType(ftyp("qt  "))?.mime).toBe("video/quicktime");
+    expect(sniffMediaType(ftyp("heic"))).toBeNull();
+    expect(sniffMediaType(Buffer.from("<html><body>hi</b", "latin1"))).toBeNull();
   });
 });

@@ -8,7 +8,7 @@ import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth/session";
 import { db } from "@/lib/db";
 import { creativeAssets, creatives } from "@/lib/db/schema";
-import { deleteObject } from "@/lib/storage";
+import { deleteObjects } from "@/lib/storage";
 import { getWorkspace } from "@/lib/workspace";
 import { findPairs, SQUARE_ASPECTS, VERTICAL_ASPECTS } from "./pairing";
 
@@ -178,7 +178,7 @@ export async function deleteAssetAction(input: { id: string }): Promise<ActionSt
     if (used) throw new UserError("This file is used by a creative. Archive the creative instead.");
 
     await db().delete(creativeAssets).where(eq(creativeAssets.id, id));
-    await deleteObject(asset.storageKey);
+    await deleteObjects([asset.storageKey]);
     await audit(user.id, "asset.delete", { type: "asset", id }, { fileName: asset.fileName });
     refresh();
     return { ok: true, message: `Deleted ${asset.fileName}` };

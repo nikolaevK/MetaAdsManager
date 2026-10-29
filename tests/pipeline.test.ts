@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,12 +7,20 @@ import { FakeGraph } from "./fake-graph";
 // Environment must be set before any app module reads env().
 const dir = mkdtempSync(path.join(tmpdir(), "mam-test-"));
 process.env.DATABASE_URL = `file:${path.join(dir, "test.db")}`;
-process.env.STORAGE_DIR = path.join(dir, "storage");
 process.env.META_ACCESS_TOKEN = "test-token";
 process.env.META_APP_SECRET = "test-secret";
 
 const graph = new FakeGraph();
 vi.stubGlobal("fetch", graph.fetch);
+
+// Library files: an in-memory stand-in for the Blob store.
+const files = vi.hoisted(() => new Map<string, Buffer>());
+vi.mock("@/lib/storage", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/storage")>()),
+  readObject: async (key: string) => files.get(key) ?? null,
+  readRange: async (key: string, start: number, end: number) => files.get(key)?.subarray(start, end) ?? null,
+  deleteObjects: async (keys: string[]) => keys.forEach((k) => files.delete(k)),
+}));
 
 type Mods = {
   db: typeof import("@/lib/db");
@@ -31,8 +39,7 @@ async function seedLaunch() {
   const { db, schema, spec } = m;
   const [asset1, asset2] = ["sq", "vt"].map((n) => {
     const key = `${CLIENT}/${n}-${crypto.randomUUID()}.jpg`;
-    mkdirSync(path.join(process.env.STORAGE_DIR!, CLIENT), { recursive: true });
-    writeFileSync(path.join(process.env.STORAGE_DIR!, key), Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]));
+    files.set(key, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]));
     return { id: crypto.randomUUID(), key };
   });
   await db.db().insert(schema.creativeAssets).values([
@@ -215,7 +222,7 @@ describe("launch pipeline", () => {
     const v1 = m.spec.normalizeSpec(old.spec);
     const [lib] = await m.db.db().select().from(m.schema.creatives).where(m.orm.eq(m.schema.creatives.id, v1.ads[0].creativeId));
     const key = `${CLIENT}/extra-${crypto.randomUUID()}.jpg`;
-    writeFileSync(path.join(process.env.STORAGE_DIR!, key), Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9, 9]));
+    files.set(key, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9, 9]));
     const extra = crypto.randomUUID();
     await m.db.db().insert(m.schema.creativeAssets).values({ id: extra, clientId: CLIENT, kind: "image", fileName: "c_4x5.jpg", storageKey: key, mimeType: "image/jpeg", sizeBytes: 7, width: 1080, height: 1350, aspect: "4:5", sha256: crypto.randomUUID() });
     const v2 = { ...v1, ads: [{ ...v1.ads[0], moreAssetIds: [lib.verticalAssetId, extra] }] };
@@ -271,25 +278,6 @@ describe("audit regressions", () => {
     await Promise.all([recordTransitions("act_1", before, after), recordTransitions("act_1", before, after)]);
     const rows = await m.db.db().select().from(m.schema.reviewEvents).where(m.orm.eq(m.schema.reviewEvents.adId, adId));
     expect(rows).toHaveLength(1);
-  });
-
-  it("rejects unsupported uploads from the first bytes and leaves no file behind", async () => {
-    const { writeUpload, UploadRejectedError } = await import("@/lib/storage");
-    const { readdirSync } = await import("node:fs");
-    let sent = 0;
-    const junk = new ReadableStream<Uint8Array>({
-      pull(c) {
-        sent += 65536;
-        if (sent > 50 * 1024 * 1024) c.close();
-        else c.enqueue(new Uint8Array(65536).fill(0x41));
-      },
-    });
-    const folder = crypto.randomUUID();
-    await expect(
-      writeUpload(folder, "bin", junk, { maxBytes: 1e10, inspect: () => ({ error: "Unsupported file type" }) }),
-    ).rejects.toBeInstanceOf(UploadRejectedError);
-    expect(sent).toBeLessThan(1024 * 1024); // aborted almost immediately, not after 50 MB
-    expect(readdirSync(path.join(process.env.STORAGE_DIR!, folder))).toEqual([]);
   });
 });
 

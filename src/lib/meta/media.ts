@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { creativeAssets, metaMedia } from "@/lib/db/schema";
 import type { MediaRef } from "@/lib/launch/payloads";
-import { readObject, readRange, statObject } from "@/lib/storage";
+import { readObject, readRange } from "@/lib/storage";
 import { graph } from "./client";
 import type { CallMode } from "./rate-limit";
 
@@ -33,6 +33,7 @@ export async function ensureMetaMedia(asset: Asset, adAccountId: string, mode: C
   if (asset.kind === "image") {
     if (cached?.imageHash) return { ready: true, ref: { kind: "image", hash: cached.imageHash } };
     const bytes = await readObject(asset.storageKey);
+    if (!bytes) throw new Error(`File for ${asset.fileName} is missing from storage`);
     const form = new FormData();
     form.set("filename", new Blob([new Uint8Array(bytes)], { type: asset.mimeType }), asset.fileName);
     const res = await graph<{ images: Record<string, { hash: string; url: string }> }>(`${adAccountId}/adimages`, {
@@ -87,19 +88,18 @@ async function pollVideo(asset: Asset, adAccountId: string, videoId: string, mod
 
 /** Resumable upload: start → transfer chunks at the offsets Meta asks for → finish. */
 async function uploadVideoChunked(asset: Asset, adAccountId: string, mode: CallMode): Promise<string> {
-  const stat = await statObject(asset.storageKey);
-  if (!stat) throw new Error(`File for ${asset.fileName} is missing from storage`);
   const path = `${adAccountId}/advideos`;
   const common = { method: "POST" as const, accountId: adAccountId, mode, host: "video" as const };
 
   const start = await graph<{ upload_session_id: string; video_id: string; start_offset: string; end_offset: string }>(
     path,
-    { ...common, params: { upload_phase: "start", file_size: stat.size } },
+    { ...common, params: { upload_phase: "start", file_size: asset.sizeBytes } },
   );
   let from = Number(start.start_offset);
   let to = Number(start.end_offset);
   while (from < to) {
     const chunk = await readRange(asset.storageKey, from, to);
+    if (chunk?.length !== to - from) throw new Error(`File for ${asset.fileName} is missing from storage`);
     const form = new FormData();
     form.set("video_file_chunk", new Blob([new Uint8Array(chunk)]), "chunk");
     const next = await graph<{ start_offset: string; end_offset: string }>(path, {

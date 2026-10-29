@@ -14,7 +14,6 @@ const schema = z.object({
   META_GRAPH_BASE_URL: z.url().optional(),
   APP_URL: z.url().default("http://localhost:3000"),
   CRON_SECRET: z.string().optional(),
-  STORAGE_DIR: z.string().default("./storage"),
 });
 
 export type Env = z.infer<typeof schema>;

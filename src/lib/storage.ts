@@ -1,117 +1,52 @@
 import "server-only";
-import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, createWriteStream, promises as fs } from "node:fs";
-import path from "node:path";
-import { Readable, Transform } from "node:stream";
-import { pipeline } from "node:stream/promises";
-import { env } from "@/lib/env";
-
-/** Local-disk object storage. Keys are generated server-side: "<clientId>/<uuid>.<ext>". */
-
-const KEY_RE = /^[A-Za-z0-9-]{1,64}\/[A-Za-z0-9-]{1,64}\.[a-z0-9]{2,5}$/;
-
-function root(): string {
-  return path.resolve(env().STORAGE_DIR);
-}
-
-export function resolveKey(key: string): string {
-  if (!KEY_RE.test(key)) throw new Error("Invalid storage key");
-  const full = path.resolve(root(), key);
-  if (!full.startsWith(root() + path.sep)) throw new Error("Invalid storage key");
-  return full;
-}
-
-export class UploadTooLargeError extends Error {}
-export class UploadRejectedError extends Error {}
-
-const HEAD_BYTES = 16;
+import { del, get } from "@vercel/blob";
 
 /**
- * Streams a request body to disk while hashing it. `inspect` sees the first bytes as soon as they
- * arrive and either rejects the upload or sets its size cap, so junk is aborted immediately rather
- * than after a multi-GB transfer. Data lands in a temp file that's only renamed on success.
+ * Library files live in a private Vercel Blob store. Keys are blob pathnames, "<clientId>/<id>.<ext>". The SDK
+ * authenticates from the environment (BLOB_READ_WRITE_TOKEN, or Vercel's OIDC token with BLOB_STORE_ID).
  */
-export async function writeUpload(
-  folder: string,
-  ext: string,
-  body: ReadableStream<Uint8Array>,
-  opts: { maxBytes: number; inspect: (head: Buffer) => { error: string } | { maxBytes: number } },
-): Promise<{ key: string; size: number; sha256: string }> {
-  const key = `${folder}/${randomUUID()}.${ext}`;
-  const finalPath = resolveKey(key);
-  await fs.mkdir(path.dirname(finalPath), { recursive: true });
-  const tmpPath = `${finalPath}.part`;
 
-  const hash = createHash("sha256");
-  let size = 0;
-  let maxBytes = opts.maxBytes;
-  let head = Buffer.alloc(0);
-  let inspected = false;
-  const inspect = (): Error | null => {
-    inspected = true;
-    const verdict = opts.inspect(head);
-    if ("error" in verdict) return new UploadRejectedError(verdict.error);
-    maxBytes = Math.min(maxBytes, verdict.maxBytes);
-    return size > maxBytes ? new UploadTooLargeError(`File exceeds ${maxBytes} bytes`) : null;
-  };
-  const meter = new Transform({
-    transform(chunk: Buffer, _enc, cb) {
-      size += chunk.length;
-      if (head.length < HEAD_BYTES) head = Buffer.concat([head, chunk.subarray(0, HEAD_BYTES - head.length)]);
-      if (!inspected && head.length >= HEAD_BYTES) {
-        const err = inspect();
-        if (err) return cb(err);
-      }
-      if (size > maxBytes) return cb(new UploadTooLargeError(`File exceeds ${maxBytes} bytes`));
-      hash.update(chunk);
-      cb(null, chunk);
-    },
-    flush(cb) {
-      // Files shorter than HEAD_BYTES are inspected at the end.
-      cb(inspected ? null : inspect());
-    },
-  });
+async function open(key: string, range?: { start: number; end: number }) {
+  const res = await get(key, { access: "private", headers: range ? { Range: `bytes=${range.start}-${range.end}` } : undefined });
+  return res?.statusCode === 200 ? res : null;
+}
 
-  try {
-    await pipeline(Readable.fromWeb(body as import("node:stream/web").ReadableStream), meter, createWriteStream(tmpPath));
-    await fs.rename(tmpPath, finalPath);
-  } catch (err) {
-    await fs.rm(tmpPath, { force: true });
-    throw err;
+/** The whole file, or null if it's missing. */
+export async function readObject(key: string): Promise<Buffer | null> {
+  const res = await open(key);
+  return res && Buffer.from(await new Response(res.stream).arrayBuffer());
+}
+
+/** Bytes [start, end) of a file, or null if it's missing. */
+export async function readRange(key: string, start: number, end: number): Promise<Buffer | null> {
+  const res = await open(key, { start, end: end - 1 });
+  return res && Buffer.from(await new Response(res.stream).arrayBuffer());
+}
+
+/** The file's first bytes and total size, reading no further; null if it's missing. */
+export async function readHead(key: string, bytes = 16): Promise<{ head: Buffer; size: number } | null> {
+  const res = await open(key, { start: 0, end: bytes - 1 });
+  if (!res) return null;
+  const total = res.headers.get("content-range")?.split("/")[1] ?? res.headers.get("content-length");
+  const reader = res.stream.getReader();
+  const parts: Uint8Array[] = [];
+  for (let n = 0; n < bytes; ) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(value);
+    n += value.length;
   }
-  return { key, size, sha256: hash.digest("hex") };
+  await reader.cancel();
+  return { head: Buffer.concat(parts).subarray(0, bytes), size: Number(total) };
 }
 
-export async function readObject(key: string): Promise<Buffer> {
-  return fs.readFile(resolveKey(key));
+/** Streams the file, or bytes [start, end] of it (inclusive, as in HTTP ranges); null if it's missing. */
+export async function streamObject(key: string, range?: { start: number; end: number }): Promise<ReadableStream | null> {
+  return (await open(key, range))?.stream ?? null;
 }
 
-export async function readRange(key: string, start: number, endExclusive: number): Promise<Buffer> {
-  const handle = await fs.open(resolveKey(key), "r");
-  try {
-    const buf = Buffer.alloc(endExclusive - start);
-    const { bytesRead } = await handle.read(buf, 0, buf.length, start);
-    return buf.subarray(0, bytesRead);
-  } finally {
-    await handle.close();
-  }
-}
-
-export async function statObject(key: string): Promise<{ size: number } | null> {
-  try {
-    const s = await fs.stat(resolveKey(key));
-    return { size: s.size };
-  } catch {
-    return null;
-  }
-}
-
-export function streamObject(key: string, range?: { start: number; end: number }): ReadableStream {
-  return Readable.toWeb(createReadStream(resolveKey(key), range)) as ReadableStream;
-}
-
-export async function deleteObject(key: string): Promise<void> {
-  await fs.rm(resolveKey(key), { force: true });
+export async function deleteObjects(keys: string[]): Promise<void> {
+  if (keys.length) await del(keys);
 }
 
 const NON_VIDEO_BRANDS = new Set(["heic", "heix", "heim", "heis", "hevc", "hevx", "mif1", "msf1", "avif", "avis", "M4A ", "M4B ", "M4P "]);

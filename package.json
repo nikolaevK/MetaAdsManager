@@ -14,10 +14,12 @@
     "db:seed": "tsx --env-file-if-exists=.env --env-file-if-exists=.env.local --conditions=react-server scripts/seed.mts",
     "user:create": "tsx --env-file-if-exists=.env --env-file-if-exists=.env.local --conditions=react-server scripts/create-user.mts",
     "worker": "tsx --env-file-if-exists=.env --env-file-if-exists=.env.local --conditions=react-server scripts/worker.mts",
-    "accounts:sync": "tsx --env-file-if-exists=.env --env-file-if-exists=.env.local --conditions=react-server scripts/sync-accounts.mts"
+    "accounts:sync": "tsx --env-file-if-exists=.env --env-file-if-exists=.env.local --conditions=react-server scripts/sync-accounts.mts",
+    "files:to-blob": "tsx --env-file-if-exists=.env --env-file-if-exists=.env.local --conditions=react-server scripts/files-to-blob.mts"
   },
   "dependencies": {
     "@libsql/client": "^0.18.0",
+    "@vercel/blob": "^2.8.2",
     "drizzle-orm": "^0.45.4",
     "lucide-react": "^1.63.0",
     "next": "16.4.3",
@@ -38,6 +40,11 @@
     "tsx": "^4.23.15",
     "typescript": "^5",
     "vitest": "^5.0.5"
+  },
+  "overrides": {
+    "@vercel/cli-config": {
+      "zod": "$zod"
+    }
   },
   "engines": {
     "node": ">=22.12"

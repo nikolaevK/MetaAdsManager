@@ -90,15 +90,16 @@ Schedules: structure every 15 min, review every 10 min, last 3 days of insights 
   audit-logged; edits are limited to objects mirrored from connected ad accounts.
 - The Meta token never leaves the server (no DB storage, sent in the `Authorization` header, `appsecret_proof` on).
 - Webhooks verify `X-Hub-Signature-256`; cron requires a bearer secret (constant-time compare).
-- Uploads are streamed to disk, size-capped, and type-checked by magic bytes; files are served only to signed-in users.
+- Uploads go from the browser to a private Vercel Blob store with a short-lived token for one path; the server then
+  checks magic bytes and size before adding the file to the library. Files are served only to signed-in users.
 - Strict security headers (CSP allowing only Meta preview frames, `frame-ancestors 'none'`, HSTS in production).
 
 ## Deploying
 
 - **Database:** create a Turso DB, set `DATABASE_URL=libsql://…` and `DATABASE_AUTH_TOKEN`, run `npm run db:migrate`.
-- **Files:** creative uploads are stored on local disk (`STORAGE_DIR`), and video files can be large, so deploy to a
-  host with a persistent volume (VM, Fly.io, Railway, Render, Docker) and run `npm run worker` alongside `npm start`.
-  Serverless platforms with request-body limits (e.g. 4.5 MB on Vercel) would need direct-to-object-storage uploads.
+- **Files:** creative uploads live in a private Vercel Blob store. In the Vercel project: Storage → Create → Blob →
+  Private, connected to Production, Preview and Development. Locally, put its `BLOB_READ_WRITE_TOKEN` in `.env.local`
+  (`vercel env pull`). Files from the old local `storage/` folder: run `npm run files:to-blob` once.
 - **Webhooks (optional, faster review alerts):** in the Meta app, subscribe the *Ad Account* object to
   `with_issues_ad_objects` and `in_process_ad_objects` with callback `https://<host>/api/webhooks/meta` and your
   `META_WEBHOOK_VERIFY_TOKEN`. Polling keeps working without it.
@@ -114,4 +115,5 @@ Schedules: structure every 15 min, review every 10 min, last 3 days of insights 
 | `npm run db:generate` / `db:migrate` / `db:seed` | Drizzle migrations and seed |
 | `npm run worker` | Background job worker |
 | `npm run accounts:sync` | Import every ad account the token can access and run the first syncs now |
+| `npm run files:to-blob` | One-off: copy library files from the old local `storage/` folder into Blob |
 | `USER_PASSWORD=… npm run user:create -- --email … --name … --role admin` | Create a user |

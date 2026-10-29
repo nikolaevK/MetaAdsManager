@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { authorizeRoute } from "@/lib/auth/route";
 import { db } from "@/lib/db";
 import { creativeAssets } from "@/lib/db/schema";
-import { statObject, streamObject } from "@/lib/storage";
+import { streamObject } from "@/lib/storage";
 
 /** Serves library files to signed-in users, with Range support so videos can seek (Safari needs it). */
 export async function GET(request: Request, ctx: RouteContext<"/api/media/[id]">) {
@@ -13,9 +13,7 @@ export async function GET(request: Request, ctx: RouteContext<"/api/media/[id]">
   if (!/^[A-Za-z0-9-]{1,64}$/.test(id)) return new Response("Not found", { status: 404 });
   const [asset] = await db().select().from(creativeAssets).where(eq(creativeAssets.id, id)).limit(1);
   if (!asset) return new Response("Not found", { status: 404 });
-  const stat = await statObject(asset.storageKey);
-  if (!stat) return new Response("Not found", { status: 404 });
-  const size = stat.size;
+  const size = asset.sizeBytes;
 
   const headers: Record<string, string> = {
     "Content-Type": asset.mimeType,
@@ -27,7 +25,9 @@ export async function GET(request: Request, ctx: RouteContext<"/api/media/[id]">
 
   const range = request.headers.get("range");
   if (!range) {
-    return new Response(streamObject(asset.storageKey), { status: 200, headers: { ...headers, "Content-Length": String(size) } });
+    const body = await streamObject(asset.storageKey);
+    if (!body) return new Response("Not found", { status: 404 });
+    return new Response(body, { status: 200, headers: { ...headers, "Content-Length": String(size) } });
   }
 
   const unsatisfiable = () =>
@@ -49,7 +49,9 @@ export async function GET(request: Request, ctx: RouteContext<"/api/media/[id]">
   }
   if (start > end || start >= size) return unsatisfiable();
 
-  return new Response(streamObject(asset.storageKey, { start, end }), {
+  const body = await streamObject(asset.storageKey, { start, end });
+  if (!body) return new Response("Not found", { status: 404 });
+  return new Response(body, {
     status: 206,
     headers: { ...headers, "Content-Range": `bytes ${start}-${end}/${size}`, "Content-Length": String(end - start + 1) },
   });

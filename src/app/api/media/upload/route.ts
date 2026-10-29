@@ -1,20 +1,23 @@
+import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { and, eq } from "drizzle-orm";
+import { z } from "zod";
 import { audit } from "@/lib/audit";
 import { authorizeRoute } from "@/lib/auth/route";
 import { db } from "@/lib/db";
 import { clients, creativeAssets } from "@/lib/db/schema";
-import { deleteObject, sniffMediaType, UploadRejectedError, UploadTooLargeError, writeUpload } from "@/lib/storage";
+import { deleteObjects, readHead, sniffMediaType } from "@/lib/storage";
 
 const IMAGE_MAX_BYTES = 30 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 
+/** "<clientId>/<uuid>.<ext>": picked by the browser, checked here. The extension only sets the upload's limits. */
+const PATHNAME = /^([A-Za-z0-9-]{1,64})\/[0-9a-f-]{36}\.(jpg|png|mp4|mov)$/;
+const CONTENT_TYPES = { jpg: "image/jpeg", png: "image/png", mp4: "video/mp4", mov: "video/quicktime" } as const;
+
 const json = (body: unknown, status: number) => Response.json(body, { status });
 
-function positiveInt(value: string | null): number | null {
-  if (!value || !/^\d{1,6}$/.test(value)) return null;
-  const n = Number(value);
-  return n > 0 ? n : null;
-}
+const clientExists = async (id: string) =>
+  (await db().select({ id: clients.id }).from(clients).where(eq(clients.id, id)).limit(1)).length > 0;
 
 function aspectOf(width: number, height: number): string {
   const r = width / height;
@@ -27,69 +30,89 @@ function aspectOf(width: number, height: number): string {
 }
 
 /**
- * Streams a creative file to storage. The body is the raw file; metadata travels in headers so
- * nothing is buffered in memory. File type is decided by magic bytes, never by the client.
+ * Step 1, Vercel Blob's client-upload handshake: a short-lived token for one path in a client's folder. The browser
+ * then sends the file straight to Blob, so uploads aren't held to the 4.5 MB request limit of Vercel Functions.
+ */
+export async function POST(request: Request) {
+  const auth = await authorizeRoute(request, "buyer");
+  if ("error" in auth) return auth.error;
+  try {
+    const body = (await request.json()) as HandleUploadBody;
+    const result = await handleUpload({
+      body,
+      request,
+      onBeforeGenerateToken: async (pathname) => {
+        const match = PATHNAME.exec(pathname);
+        if (!match || !(await clientExists(match[1]))) throw new Error("Invalid upload path");
+        const ext = match[2] as keyof typeof CONTENT_TYPES;
+        return {
+          allowedContentTypes: [CONTENT_TYPES[ext]],
+          maximumSizeInBytes: ext === "jpg" || ext === "png" ? IMAGE_MAX_BYTES : VIDEO_MAX_BYTES,
+        };
+      },
+    });
+    return Response.json(result);
+  } catch (err) {
+    console.error("[upload] couldn't issue an upload token:", err);
+    return json({ error: err instanceof Error ? err.message : "Upload failed" }, 400);
+  }
+}
+
+const uploaded = z.object({
+  pathname: z.string().regex(PATHNAME),
+  fileName: z.string().max(1000),
+  width: z.number().int().min(1).max(999_999),
+  height: z.number().int().min(1).max(999_999),
+  /** Content fingerprint from the browser (lib/fingerprint), used to spot re-uploads. */
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+});
+
+/**
+ * Step 2, once the browser's upload finishes: decides the file type from its first bytes (never the client's
+ * Content-Type), enforces the size caps, and adds it to the client's library. Anything rejected is deleted.
  */
 export async function PUT(request: Request) {
   const auth = await authorizeRoute(request, "buyer");
   if ("error" in auth) return auth.error;
 
-  const clientId = request.headers.get("x-client-id") ?? "";
-  if (!/^[A-Za-z0-9-]{1,64}$/.test(clientId)) return json({ error: "Missing or invalid client" }, 400);
-
-  let fileName = "";
-  try {
-    fileName = decodeURIComponent(request.headers.get("x-file-name") ?? "").trim().slice(0, 200);
-  } catch {
-    return json({ error: "Invalid file name" }, 400);
-  }
+  const parsed = uploaded.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) return json({ error: "Invalid upload" }, 400);
+  const { pathname, width, height, sha256 } = parsed.data;
   // Strip path components and control characters; the name is display-only.
-  fileName = fileName.replace(/^.*[\\/]/, "").replace(/[\u0000-\u001f\u007f]/g, "");
+  const fileName = parsed.data.fileName.trim().slice(0, 200).replace(/^.*[\\/]/, "").replace(/[\u0000-\u001f\u007f]/g, "");
   if (!fileName) return json({ error: "Missing file name" }, 400);
+  const clientId = PATHNAME.exec(pathname)![1];
+  if (!(await clientExists(clientId))) return json({ error: "Client not found" }, 400);
 
-  const width = positiveInt(request.headers.get("x-width"));
-  const height = positiveInt(request.headers.get("x-height"));
-  if (!width || !height) return json({ error: "Missing or invalid dimensions" }, 400);
-  if (!request.body) return json({ error: "Empty body" }, 400);
+  // A retried request after the first one went through.
+  const [registered] = await db().select().from(creativeAssets).where(eq(creativeAssets.storageKey, pathname)).limit(1);
+  if (registered) return json({ asset: registered, duplicate: false }, 200);
 
-  const [client] = await db().select({ id: clients.id }).from(clients).where(eq(clients.id, clientId)).limit(1);
-  if (!client) return json({ error: "Client not found" }, 400);
-
-  // Storage keys need an extension up front; the real type is stored as mimeType in the DB.
-  const detected: { type: ReturnType<typeof sniffMediaType> } = { type: null };
-  let stored: Awaited<ReturnType<typeof writeUpload>>;
-  try {
-    stored = await writeUpload(client.id, "bin", request.body, {
-      maxBytes: VIDEO_MAX_BYTES,
-      // Decided from the first bytes, so an unsupported or oversized file is cut off immediately.
-      inspect: (head) => {
-        detected.type = sniffMediaType(head);
-        if (!detected.type) return { error: "Unsupported file type" };
-        return { maxBytes: detected.type.kind === "image" ? IMAGE_MAX_BYTES : VIDEO_MAX_BYTES };
-      },
-    });
-  } catch (err) {
-    if (err instanceof UploadTooLargeError) {
-      return json({ error: detected.type?.kind === "image" ? "Images must be 30 MB or smaller" : "Videos must be 4 GB or smaller" }, 413);
-    }
-    if (err instanceof UploadRejectedError) return json({ error: "Unsupported file type. Use JPG, PNG, MP4 or MOV." }, 415);
-    throw err;
+  const stored = await readHead(pathname);
+  if (!stored) return json({ error: "Upload not found" }, 404);
+  const type = sniffMediaType(stored.head);
+  if (!type) {
+    await deleteObjects([pathname]);
+    return json({ error: "Unsupported file type. Use JPG, PNG, MP4 or MOV." }, 415);
   }
-  const type = detected.type!;
+  if (stored.size > (type.kind === "image" ? IMAGE_MAX_BYTES : VIDEO_MAX_BYTES)) {
+    await deleteObjects([pathname]);
+    return json({ error: type.kind === "image" ? "Images must be 30 MB or smaller" : "Videos must be 4 GB or smaller" }, 413);
+  }
 
   const [inserted] = await db()
     .insert(creativeAssets)
     .values({
-      clientId: client.id,
+      clientId,
       kind: type.kind,
       fileName,
-      storageKey: stored.key,
+      storageKey: pathname,
       mimeType: type.mime,
       sizeBytes: stored.size,
       width,
       height,
       aspect: aspectOf(width, height),
-      sha256: stored.sha256,
+      sha256,
       createdBy: auth.user.id,
     })
     .onConflictDoNothing()
@@ -97,11 +120,11 @@ export async function PUT(request: Request) {
 
   if (!inserted) {
     // Same bytes already in this client's library: keep the original, drop the new copy.
-    await deleteObject(stored.key);
+    await deleteObjects([pathname]);
     const [existing] = await db()
       .select()
       .from(creativeAssets)
-      .where(and(eq(creativeAssets.clientId, client.id), eq(creativeAssets.sha256, stored.sha256)))
+      .where(and(eq(creativeAssets.clientId, clientId), eq(creativeAssets.sha256, sha256)))
       .limit(1);
     return json({ asset: existing, duplicate: true }, 200);
   }
